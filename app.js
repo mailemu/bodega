@@ -1,5 +1,5 @@
-// Mailemu Bodega · pantalla de Bodega (etapa 2)
-// JS sin compilación. Toda escritura va por las funciones de Postgres (03_funciones.sql);
+// Mailemu Bodega · app web (pantalla de Bodega + consulta y corrección)
+// JS sin compilación. Toda escritura va por las funciones de Postgres (bodega/sql/03 y 07);
 // la app solo lee tablas y vistas. La clave de abajo es la pública (anon): puede estar en el código.
 'use strict';
 
@@ -12,15 +12,21 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
 const VARIEDADES = { ulmo: 'Ulmo', bosque_nativo: 'Bosque Nativo', quillay: 'Quillay' };
 const CADENAS = { jumbo: 'Jumbo', santa_isabel: 'Santa Isabel', lider: 'Líder', tottus: 'Tottus' };
 const CDS = { el_penon: 'El Peñón', lo_aguirre: 'Lo Aguirre' };
+const DESTINOS = { mercado_libre: 'Mercado Libre', creado_en_chile: 'Creado en Chile', berni: 'Berni (web y otros)', cliente: 'Cliente', supermercado: 'Supermercado' };
+const TIPOS_OP = { envasar: 'Envasado', encajar: 'Encajado', desarmar: 'Caja desarmada', armar_pack: 'Pack armado', preparar: 'Pistoleado en pedido', retiro: 'Retiro', ajuste: 'Conteo o ajuste', anulacion: 'Deshecho' };
 // La app sugiere; quien sube la factura decide (Jumbo y Santa Isabel comparten RUT).
 const RUT_CADENA = {
   '76042014-K': { sugerida: 'lider', texto: 'RUT de Walmart: sugerencia Líder. Marca también el CD.' },
   '81201000-K': { sugerida: null, texto: 'RUT de Cencosud: Jumbo y Santa Isabel comparten RUT. Márcala tú.' },
 };
+const TITULOS = { inicio: 'Bodega', envasar: 'Envasar', encajar: 'Encajar', pack: 'Armar pack', pedidos: 'Por retirar', preparar: 'Preparar pedido',
+  factura: 'Subir factura', pedido: 'Nuevo pedido', stock: 'Stock', tambores: 'Tambores', historial: 'Historial', conteo: 'Conteo de inventario',
+  codigo: 'Registrar código', ayuda: 'Ayuda' };
+const PADRE = { preparar: 'pedidos', pedido: 'pedidos' }; // el resto vuelve al menú
 
 const E = {
-  usuaria: null, nombre: '', productos: new Map(), codigos: new Map(), tambores: [],
-  log: [], pantalla: null, ctx: {}, volverA: null, factura: null,
+  usuaria: null, nombre: '', nombres: new Map(), productos: new Map(), codigos: new Map(), tambores: [],
+  log: [], logId: 0, pantalla: null, ctx: {}, volverA: null, factura: null,
 };
 
 const app = document.getElementById('app');
@@ -29,6 +35,10 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const num = (n) => Number(n ?? 0).toLocaleString('es-CL', { maximumFractionDigits: 1 });
 const leer = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const guardar = (k, v) => { try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } };
+const fecha = (iso) => (iso ? new Date(iso).toLocaleString('es-CL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '');
+const fechaCorta = (d) => (d ? new Date(d + (String(d).length === 10 ? 'T12:00:00' : '')).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '');
+const quien = (email) => E.nombres.get(email) || email || '';
+const plural = (n, uno, varios) => `${num(n)} ${Math.abs(n) === 1 ? uno : varios}`;
 
 // ───────── Utilidades ─────────
 
@@ -42,11 +52,15 @@ function pitido(ok) {
   } catch { /* sin sonido */ }
 }
 
-function aviso(texto, tipo = 'info') {
+// Aviso flotante. Con `accion` muestra un botón (ej. "Deshacer").
+function aviso(texto, tipo = 'info', accion = null) {
   const d = document.createElement('div');
-  d.className = 'aviso ' + tipo; d.textContent = texto; d.onclick = () => d.remove();
+  d.className = 'aviso ' + tipo;
+  d.innerHTML = `<span>${esc(texto)}</span>${accion ? `<button type="button">${esc(accion.texto)}</button>` : ''}<button type="button" class="cerrar" aria-label="Cerrar">×</button>`;
+  d.querySelector('.cerrar').onclick = () => d.remove();
+  if (accion) d.querySelector('button').onclick = () => { d.remove(); accion.fn(); };
   $('#avisos').appendChild(d);
-  setTimeout(() => d.remove(), tipo === 'error' || tipo === 'alerta' ? 8000 : 4500);
+  setTimeout(() => d.remove(), accion ? 12000 : tipo === 'error' || tipo === 'alerta' ? 8000 : 4500);
 }
 const avisosDe = (r) => (r?.avisos || []).forEach((a) => aviso(a, 'alerta'));
 
@@ -62,31 +76,57 @@ async function rpc(fn, args = {}) {
   if (error) { const e = new Error(error.message || 'Error'); e.codigo = error.hint; throw e; }
   return data;
 }
+async function consulta(q) {
+  const { data, error } = await q;
+  if (error) throw new Error(error.message);
+  return data;
+}
 
 function resumenCant(cj, u) {
-  return [cj ? `${cj} caja${cj === 1 ? '' : 's'}` : '', u ? `${u} unidad${u === 1 ? '' : 'es'}` : ''].filter(Boolean).join(' + ') || 'sin productos';
+  return [cj ? plural(cj, 'caja', 'cajas') : '', u ? plural(u, 'unidad', 'unidades') : ''].filter(Boolean).join(' + ') || 'sin productos';
 }
-const textoStock = (s) => (!s ? '' : s.caja_controlada ? `${num(s.cajas)} cj + ${num(s.sueltas)} u` : `${num(s.sueltas)} u`);
+// "37 cajas + 4 sueltas" o "12 unidades" según el producto
+function textoStock(p, sueltas, cajas) {
+  if (p.caja_controlada) {
+    return [cajas ? plural(cajas, 'caja', 'cajas') : '', sueltas ? plural(sueltas, 'suelta', 'sueltas') : ''].filter(Boolean).join(' + ') || '0';
+  }
+  if (p.id === 'pack') return plural(sueltas, 'pack', 'packs');
+  if (!p.uds_por_caja) return plural(sueltas, 'balde', 'baldes');
+  return plural(sueltas, 'unidad', 'unidades');
+}
 const nombreTambor = (t) => (t.identificacion ? t.identificacion : `N.º ${t.id}`);
+// Palabra para las unidades sueltas de cada producto
+const unidadDe = (p) => (p.caja_controlada ? ['suelta', 'sueltas'] : p.id === 'pack' ? ['pack', 'packs'] : !p.uds_por_caja ? ['balde', 'baldes'] : ['unidad', 'unidades']);
 
-// Cola: cada pistoleo se graba en orden, uno tras otro.
+// Guía plegable "Cómo se hace" (se recuerda si la usuaria la cerró)
+function guia(clave, pasos) {
+  const cerrada = leer('guia_' + clave) === '1';
+  return `<details class="guia" data-guia="${clave}" ${cerrada ? '' : 'open'}><summary>Cómo se hace</summary><ol>${pasos.map((p) => `<li>${p}</li>`).join('')}</ol></details>`;
+}
+function activarGuias() {
+  document.querySelectorAll('details.guia').forEach((d) => d.addEventListener('toggle', () => guardar('guia_' + d.dataset.guia, d.open ? '0' : '1')));
+}
+
+// Cola: cada acción se graba en orden, una tras otra.
 let cola = Promise.resolve();
 function encolar(fn) {
   cola = cola.then(fn).catch((e) => {
-    registrar(false, mensaje(e));
+    if ($('#log')) registrar(false, mensaje(e)); else { pitido(false); aviso(mensaje(e), 'error'); }
     if (e.desconocido) pintarDesconocido(e.desconocido);
   });
+  return cola;
 }
 
-// ───────── Pistola ─────────
+// ───────── Pistola y registro de lecturas (con Deshacer) ─────────
 
-function htmlPistola(texto) {
+function htmlPistola(texto, extra = '') {
   return `<div class="pistola">
-    <label for="scan">${esc(texto)}</label>
+    <label for="scan">${esc(texto)}</label>${extra}
     <div class="fila">
       <input id="scan" inputmode="none" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Esperando la pistola…">
       <button type="button" class="sec" id="manual">Escribir a mano</button>
     </div>
+    <div class="estado" id="estadoScan"></div>
   </div>
   <div id="desc"></div>
   <ul id="log" class="log"></ul>`;
@@ -95,11 +135,12 @@ function htmlPistola(texto) {
 function activarPistola(alLeer) {
   const inp = $('#scan'); if (!inp) return;
   let manual = false;
+  const estado = () => { const s = $('#estadoScan'); if (s) s.textContent = document.activeElement === inp ? (manual ? 'Escribe el código y aprieta Enter.' : 'Lista para pistolear.') : 'Toca el recuadro para volver a pistolear.'; };
   const enfocar = () => {
     if ($('#scan') !== inp) return; // ya se cambió de pantalla
     const a = document.activeElement;
-    if (a && a !== inp && a.matches('input, select, textarea')) return; // no robar el foco a otro campo
-    inp.focus({ preventScroll: true });
+    if (a && a !== inp && a.matches('input, select, textarea')) { estado(); return; } // no robar el foco a otro campo
+    inp.focus({ preventScroll: true }); estado();
   };
   inp.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Enter' && ev.key !== 'Tab') return;
@@ -108,26 +149,54 @@ function activarPistola(alLeer) {
     if (v) encolar(() => alLeer(v));
     if (manual) { manual = false; inp.setAttribute('inputmode', 'none'); inp.blur(); }
   });
-  inp.addEventListener('blur', () => setTimeout(enfocar, 150));
-  $('#manual').onclick = () => { manual = true; inp.setAttribute('inputmode', 'numeric'); inp.blur(); setTimeout(() => inp.focus(), 30); };
+  inp.addEventListener('focus', estado);
+  inp.addEventListener('blur', () => setTimeout(() => {
+    // Si dejó "Escribir a mano" sin terminar, vuelve al modo pistola (si no, el teclado reaparece cada vez)
+    if (manual && document.activeElement !== inp) { manual = false; inp.setAttribute('inputmode', 'none'); }
+    enfocar();
+  }, 150));
+  $('#manual').onclick = () => { manual = true; inp.setAttribute('inputmode', 'numeric'); inp.blur(); setTimeout(() => { inp.focus(); estado(); }, 30); };
   enfocar(); pintarLog();
 }
 
-function registrar(ok, texto) {
-  E.log.unshift({ ok, texto, hora: new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) });
-  E.log = E.log.slice(0, 8);
+// extra.op = id de la operación (permite "Deshacer"); extra.alDeshacer = qué refrescar después
+function registrar(ok, texto, extra = {}) {
+  E.log.unshift({ id: ++E.logId, ok, texto, op: extra.op || null, alDeshacer: extra.alDeshacer || null, deshecho: false,
+    hora: new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) });
+  E.log = E.log.slice(0, 10);
   pitido(ok); pintarLog();
-  if (ok) { const d = $('#desc'); if (d) d.innerHTML = ''; }
 }
 function pintarLog() {
   const ul = $('#log'); if (!ul) return;
-  ul.innerHTML = E.log.map((l) => `<li class="${l.ok ? 'ok' : 'mal'}"><span>${esc(l.hora)}</span>${esc(l.texto)}</li>`).join('')
-    || '<li class="vacio">Todavía no hay registros en esta pantalla.</li>';
+  ul.innerHTML = E.log.map((l) => `<li class="${l.deshecho ? 'deshecho' : l.ok ? 'ok' : 'mal'}">
+      <div class="txt"><span class="hora">${esc(l.hora)}${l.deshecho ? ' · deshecho' : ''}</span>${esc(l.texto)}</div>
+      ${l.op && !l.deshecho ? `<button type="button" class="mini sec" data-deshacer="${l.id}">Deshacer</button>` : ''}</li>`).join('')
+    || '<li class="vacio">Aquí vas a ver cada lectura. Si te equivocas, toca "Deshacer" en esa línea.</li>';
 }
+document.addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-deshacer]'); if (!b) return;
+  const l = E.log.find((x) => x.id === Number(b.dataset.deshacer)); if (!l || l.deshecho) return;
+  if (!confirm(`¿Deshacer esto?\n\n${l.texto}`)) return;
+  encolar(async () => {
+    await rpc('op_anular', { p_operacion: l.op, p_motivo: `Deshecho al momento por ${E.nombre}` });
+    l.deshecho = true; pintarLog(); pitido(true); aviso('Listo, se deshizo.', 'ok');
+    if (l.alDeshacer) await l.alDeshacer();
+  });
+});
+
+// Si la pistola "escribe" cuando el recuadro no tiene el foco (por ejemplo, tras una pregunta), los números se mandan igual al recuadro
+document.addEventListener('keydown', (ev) => {
+  const inp = $('#scan'); const a = document.activeElement;
+  if (!inp || a === inp || (a && a.matches('input, select, textarea'))) return;
+  if (/^[0-9]$/.test(ev.key) && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+    ev.preventDefault(); inp.value += ev.key; inp.focus({ preventScroll: true });
+  }
+});
+
 function pintarDesconocido(cod) {
   const d = $('#desc'); if (!d) return;
   E.volverA = { p: E.pantalla, id: E.ctx.id };
-  d.innerHTML = `<button type="button" class="sec ancho" data-ir="codigo" data-codigo="${esc(cod)}">Registrar el código ${esc(cod)}</button>`;
+  d.innerHTML = `<button type="button" class="sec ancho" data-ir="codigo" data-codigo="${esc(cod)}">La app no conoce el código ${esc(cod)}: registrarlo</button>`;
 }
 
 function buscarCodigo(cod) {
@@ -139,19 +208,18 @@ function buscarCodigo(cod) {
 // ───────── Datos base ─────────
 
 async function cargarBase() {
-  const [p, c] = await Promise.all([
-    sb.from('productos').select('*').order('orden'),
-    sb.from('codigos').select('*'),
+  const [p, c, u] = await Promise.all([
+    consulta(sb.from('productos').select('*').order('orden')),
+    consulta(sb.from('codigos').select('*')),
+    consulta(sb.from('usuarias').select('*')),
   ]);
-  if (p.error || c.error) throw new Error((p.error || c.error).message);
-  E.productos = new Map(p.data.map((x) => [x.id, x]));
-  E.codigos = new Map(c.data.map((x) => [x.codigo, x]));
+  E.productos = new Map(p.map((x) => [x.id, x]));
+  E.codigos = new Map(c.map((x) => [x.codigo, x]));
+  E.nombres = new Map(u.map((x) => [x.email, x.nombre]));
   await cargarTambores();
 }
 async function cargarTambores() {
-  const { data, error } = await sb.from('v_tambores').select('*').eq('estado', 'abierto').order('abierto_en', { ascending: false });
-  if (error) throw new Error(error.message);
-  E.tambores = data;
+  E.tambores = await consulta(sb.from('v_tambores').select('*').eq('estado', 'abierto').order('abierto_en', { ascending: false }));
 }
 function tamborDe(variedad) {
   const abiertos = E.tambores.filter((t) => t.variedad === variedad);
@@ -160,15 +228,24 @@ function tamborDe(variedad) {
   return abiertos.find((t) => t.id === elegido) || abiertos[0]; // por defecto, el abierto más reciente
 }
 
-// ───────── Navegación ─────────
+// ───────── Navegación (con flecha y con el botón "atrás" del celular) ─────────
 
 const PANTALLAS = {};
-function ir(p, ctx = {}) {
+// reemplazar: tras retirar, anular o cargar, la pantalla anterior ya no sirve; "atrás" no debe volver a ella
+function ir(p, ctx = {}, { historial = true, reemplazar = false } = {}) {
   if (p === 'codigo' && !ctx.codigo) E.volverA = null; // entrada desde el menú: no volver a otra pantalla
-  E.pantalla = p; E.ctx = ctx; E.log = [];
+  const desde = E.pantalla;
+  E.pantalla = p; E.ctx = { ...ctx }; E.log = [];
+  if (reemplazar) history.replaceState({ p, ctx, desde: history.state && history.state.desde }, '', '#' + p);
+  else if (historial) history.pushState({ p, ctx, desde }, '', '#' + p);
   window.scrollTo(0, 0); pintarCabecera();
-  Promise.resolve(PANTALLAS[p](ctx)).catch((e) => aviso(mensaje(e), 'error'));
+  Promise.resolve(PANTALLAS[p](E.ctx)).then(activarGuias).catch((e) => aviso(mensaje(e), 'error'));
 }
+window.addEventListener('popstate', (ev) => {
+  if (!E.usuaria) return;
+  const s = ev.state || { p: 'inicio', ctx: {} };
+  ir(PANTALLAS[s.p] ? s.p : 'inicio', s.ctx || {}, { historial: false });
+});
 document.addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-ir]'); if (!b || !E.usuaria) return;
   ev.preventDefault();
@@ -176,10 +253,17 @@ document.addEventListener('click', (ev) => {
 });
 
 function pintarCabecera() {
-  $('#cab').innerHTML = `<button class="marca" ${E.usuaria ? 'data-ir="inicio"' : ''}>Mailemu<span>Bodega</span></button>
+  const enInicio = !E.usuaria || E.pantalla === 'inicio';
+  const padre = PADRE[E.pantalla] || 'inicio';
+  $('#cab').innerHTML = `
+    ${enInicio ? '' : `<button type="button" class="volver" id="btnVolver">← ${padre === 'inicio' ? 'Menú' : TITULOS[padre]}</button>`}
+    <div class="titulo">${enInicio ? 'Mailemu <span>Bodega</span>' : esc(TITULOS[E.pantalla] || '')}</div>
     ${E.usuaria ? `<div class="quien"><span>${esc(E.nombre)}</span><button class="enlace" id="salir">Salir</button></div>` : ''}`;
   const s = $('#salir');
   if (s) s.onclick = async () => { if (confirm('¿Cerrar sesión en este aparato?')) await sb.auth.signOut(); };
+  // La flecha sigue el mismo camino que el botón "atrás" del celular cuando se llegó desde la pantalla de arriba
+  const v = $('#btnVolver');
+  if (v) v.onclick = () => { if (history.state && history.state.desde === padre) history.back(); else ir(padre); };
 }
 
 // ───────── Sesión ─────────
@@ -194,10 +278,10 @@ async function iniciar() {
       app.innerHTML = `<div class="tarjeta"><p class="error">La cuenta ${esc(E.usuaria)} no está autorizada para la bodega.</p><p class="nota">Pídele a Berni que la agregue.</p></div>`;
       return;
     }
-    const { data } = await sb.from('usuarias').select('nombre').eq('email', E.usuaria).maybeSingle();
-    E.nombre = data?.nombre || E.usuaria;
     await cargarBase();
-    ir('inicio');
+    E.nombre = E.nombres.get(E.usuaria) || E.usuaria;
+    history.replaceState({ p: 'inicio', ctx: {} }, '', '#inicio');
+    ir('inicio', {}, { historial: false });
   } catch (e) {
     pintarCabecera();
     app.innerHTML = `<div class="tarjeta"><p class="error">${esc(mensaje(e))}</p><button onclick="location.reload()">Reintentar</button></div>`;
@@ -206,9 +290,10 @@ async function iniciar() {
 sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT') pantallaLogin(); });
 
 function pantallaLogin() {
-  E.usuaria = null; pintarCabecera();
+  E.usuaria = null; E.pantalla = null; pintarCabecera();
   app.innerHTML = `<form class="tarjeta login" id="fLogin">
     <h1>Bodega Mailemu</h1>
+    <p class="nota">Entra con tu correo de Mailemu y tu contraseña. Queda guardado en este aparato.</p>
     <label>Correo<input type="email" name="email" autocomplete="username" required value="${esc(leer('ultimo_correo') || '')}"></label>
     <label>Contraseña<input type="password" name="clave" autocomplete="current-password" required></label>
     <button type="submit">Entrar</button>
@@ -227,49 +312,65 @@ function pantallaLogin() {
   };
 }
 
-// ───────── Inicio ─────────
+// ───────── Menú ─────────
 
 PANTALLAS.inicio = async () => {
   app.innerHTML = `<p class="saludo">Hola, ${esc(E.nombre)}. ¿Qué vas a hacer?</p>
+  <div id="primerPaso"></div>
+  <div class="grupo">En la bodega</div>
   <div class="menu">
-    <button class="grande" data-ir="envasar"><b>Envasar</b><span>Frascos y cajas desde el tambor</span></button>
-    <button class="grande" data-ir="encajar"><b>Encajar</b><span>12 frascos sueltos a una caja</span></button>
+    <button class="grande" data-ir="envasar"><b>Envasar</b><span>Registra frascos y cajas que salen del tambor</span></button>
+    <button class="grande" data-ir="encajar"><b>Encajar</b><span>Junta 12 frascos sueltos en una caja</span></button>
     <button class="grande" data-ir="pack"><b>Armar pack</b><span>Pack Variedades 3 × 300 g</span></button>
-    <button class="grande" data-ir="pedidos"><b>Por retirar <span class="contador oculto" id="nPend"></span></b><span>Preparar pedidos y facturas, marcar retirado</span></button>
-    <button class="grande" data-ir="factura"><b>Subir factura</b><span>XML de Defontana</span></button>
-    <button class="grande sec" data-ir="codigo"><b>Registrar código</b><span>Etiqueta que la app no conoce</span></button>
+    <button class="grande" data-ir="pedidos"><b>Por retirar <span class="contador oculto" id="nPend"></span></b><span>Prepara pedidos y facturas y márcalos retirados</span></button>
+  </div>
+  <div class="grupo">Cargar</div>
+  <div class="menu">
+    <button class="grande claro" data-ir="factura"><b>Subir factura</b><span>XML de Defontana (supermercados)</span></button>
+    <button class="grande claro" data-ir="pedido"><b>Nuevo pedido</b><span>Mercado Libre, clientes, Berni y otros</span></button>
+  </div>
+  <div class="grupo">Ver y corregir</div>
+  <div class="menu">
+    <button class="grande claro" data-ir="stock"><b>Stock</b><span>Cuánto hay de cada producto</span></button>
+    <button class="grande claro" data-ir="tambores"><b>Tambores</b><span>Kilos de cada tambor; abrir, cerrar, corregir</span></button>
+    <button class="grande claro" data-ir="historial"><b>Historial</b><span>Todo lo registrado; deshacer errores</span></button>
+    <button class="grande claro" data-ir="conteo"><b>Conteo de inventario</b><span>Inventario inicial o corregir lo contado</span></button>
+    <button class="grande claro" data-ir="codigo"><b>Registrar código</b><span>Etiqueta que la app no conoce</span></button>
+    <button class="grande claro" data-ir="ayuda"><b>Ayuda</b><span>Cómo funciona, la pistola, primer día</span></button>
   </div>`;
-  const { count } = await sb.from('pedidos').select('id', { count: 'exact', head: true }).eq('estado', 'por_retirar');
-  const n = $('#nPend'); if (n && count) { n.textContent = count; n.classList.remove('oculto'); }
+  const [pend, ops] = await Promise.all([
+    sb.from('pedidos').select('id', { count: 'exact', head: true }).eq('estado', 'por_retirar'),
+    sb.from('operaciones').select('id', { count: 'exact', head: true }),
+  ]);
+  const n = $('#nPend'); if (n && pend.count) { n.textContent = pend.count; n.classList.remove('oculto'); }
+  const pp = $('#primerPaso');
+  if (pp && ops.count === 0) {
+    pp.innerHTML = `<div class="aviso-inicio"><b>Primer paso: crea el inventario.</b><br>
+      1) En <b>Tambores</b>, registra cada tambor con sus kilos. 2) En <b>Conteo de inventario</b>, escribe cuántos frascos y cajas hay.
+      <div class="fila-botones"><button class="mini" data-ir="tambores">Ir a Tambores</button><button class="mini sec" data-ir="conteo">Ir al Conteo</button></div></div>`;
+  }
 };
 
 // ───────── Envasar ─────────
 
 PANTALLAS.envasar = () => {
-  app.innerHTML = `<h2>Envasar</h2>
-  ${htmlPistola('Pistolea el frasco (+1 suelto) o la caja (+1 caja de 12)')}
-  <h3>Tambores abiertos</h3>
-  <section class="tambores" id="tambores"></section>
-  <p><button type="button" class="sec" id="btnTambor">Abrir tambor nuevo</button></p>
-  <form id="fTambor" class="tarjeta oculto">
-    <h3>Abrir tambor nuevo</h3>
-    <label>Variedad<select name="variedad" required>${Object.entries(VARIEDADES).map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
-    <label>Kilos (los anotados por fuera)<input name="kg" type="number" inputmode="decimal" min="1" step="0.1" required></label>
-    <label>Identificación (opcional)<input name="ident" placeholder="Ej.: T-U4 o lo que diga el tambor"></label>
-    <div class="botonera"><button type="submit">Abrir tambor</button><button type="button" class="sec" id="cancTambor">Cancelar</button></div>
-  </form>
-  <section class="tarjeta"><h3>Sin código</h3>
-    <p class="nota">500 g y 1 kg: el botón suma una caja de 10 unidades (los frascos sueltos se pistolean). Baldes: se registran aquí.</p>
+  app.innerHTML = guia('envasar', [
+    'Revisa que cada variedad tenga su tambor en uso (abajo). Si no, ábrelo en <b>Tambores</b>.',
+    'Pistolea <b>cada frasco</b> que envasas (+1 suelto), o <b>la caja</b> si envasas directo en caja (+1 caja de 12).',
+    'Cada lectura descuenta los kilos del tambor y suma al stock.',
+    '¿Te equivocaste? Toca <b>Deshacer</b> en esa línea.',
+  ]) + `
+  ${htmlPistola('Pistolea el frasco o la caja', '<div class="usomini" id="usoMini"></div>')}
+  <h3>Tambores en uso</h3>
+  <div class="usos" id="usos"></div>
+  <section class="tarjeta"><h3>Productos sin código</h3>
+    <p class="nota">Botones para lo que no se pistolea: la caja de 10 de 500 g y 1 kg (los frascos sueltos sí se pistolean) y los baldes.</p>
     <div class="botonera" id="sinCodigo"></div>
   </section>`;
-  pintarTambores();
-  const f = $('#fTambor');
-  $('#btnTambor').onclick = () => { f.classList.remove('oculto'); f.kg.focus(); };
-  $('#cancTambor').onclick = () => { f.reset(); f.classList.add('oculto'); };
-  f.onsubmit = (ev) => { ev.preventDefault(); encolar(() => abrirTambor(f)); };
+  pintarUsos();
   $('#sinCodigo').innerHTML = [...E.productos.values()]
     .filter((p) => p.activo && p.variedad && !p.caja_controlada)
-    .map((p) => `<button type="button" class="sec" data-envasar="${p.id}">${esc(p.nombre)} · ${p.uds_por_caja ? `+1 caja (${p.uds_por_caja} u)` : '+1 balde'}</button>`)
+    .map((p) => `<button type="button" class="sec mini" data-envasar="${p.id}">${esc(p.nombre)} · ${p.uds_por_caja ? `+1 caja (${p.uds_por_caja} u)` : '+1 balde'}</button>`)
     .join('');
   $('#sinCodigo').querySelectorAll('[data-envasar]').forEach((b) => {
     b.onclick = () => { const p = E.productos.get(b.dataset.envasar); encolar(() => envasar(p, p.uds_por_caja || 1, 0)); };
@@ -280,69 +381,64 @@ PANTALLAS.envasar = () => {
   });
 };
 
-function pintarTambores() {
-  const s = $('#tambores'); if (!s) return;
+function pintarUsos() {
+  const s = $('#usos'); if (!s) return;
+  // Resumen junto a la pistola: de qué tambor se descuenta cada variedad
+  const mini = $('#usoMini');
+  if (mini) mini.innerHTML = 'Descuenta de: ' + Object.entries(VARIEDADES).map(([v, n]) => {
+    const t = tamborDe(v);
+    return t ? `<span>${n} <b>${esc(nombreTambor(t))}</b> (${num(t.kg_restantes)} kg)</span>` : `<span class="falta">${n}: sin tambor</span>`;
+  }).join(' · ');
   s.innerHTML = Object.entries(VARIEDADES).map(([v, nombre]) => {
     const abiertos = E.tambores.filter((t) => t.variedad === v);
     const t = tamborDe(v);
-    if (!t) return `<div class="tambor falta"><b>${nombre}</b><span>Sin tambor abierto</span></div>`;
-    const sel = abiertos.length > 1
+    if (!t) return `<div class="uso falta"><b>${nombre}</b><span>Sin tambor abierto</span><button type="button" class="mini sec" data-ir="tambores">Abrir uno</button></div>`;
+    const detalle = abiertos.length > 1
       ? `<select data-variedad="${v}" aria-label="Tambor de ${nombre}">${abiertos.map((a) => `<option value="${a.id}" ${a.id === t.id ? 'selected' : ''}>${esc(nombreTambor(a))} · quedan ${num(a.kg_restantes)} kg</option>`).join('')}</select>`
-      : '';
-    return `<div class="tambor"><b>${nombre}</b><span>Envasando del tambor ${esc(nombreTambor(t))}</span><small>Quedan ${num(t.kg_restantes)} de ${num(t.kg_iniciales)} kg</small>${sel}</div>`;
+      : `<span>${esc(nombreTambor(t))} · quedan <strong>${num(t.kg_restantes)} kg</strong></span>`;
+    return `<div class="uso"><b>${nombre}</b>${detalle}</div>`;
   }).join('');
   s.querySelectorAll('select[data-variedad]').forEach((x) => {
-    x.onchange = () => { guardar('tambor_' + x.dataset.variedad, x.value); pintarTambores(); x.blur(); };
+    x.onchange = () => { guardar('tambor_' + x.dataset.variedad, x.value); pintarUsos(); };
   });
-}
-
-async function abrirTambor(f) {
-  const v = f.variedad.value; const kg = Number(String(f.kg.value).replace(',', '.'));
-  if (!(kg > 0)) throw new Error('Escribe los kilos del tambor');
-  const abiertos = E.tambores.filter((t) => t.variedad === v);
-  if (abiertos.length && confirm(`Ya hay ${abiertos.length === 1 ? 'un tambor' : abiertos.length + ' tambores'} de ${VARIEDADES[v]} abierto${abiertos.length === 1 ? '' : 's'} (${abiertos.map(nombreTambor).join(', ')}).\n\n¿Cerrarlo ahora? Aceptar = cerrar · Cancelar = dejarlo abierto`)) {
-    for (const t of abiertos) await rpc('tambor_cerrar', { p_id: t.id });
-  }
-  const r = await rpc('tambor_alta', { p_variedad: v, p_kg: kg, p_identificacion: f.ident.value.trim() || null, p_abrir: true });
-  guardar('tambor_' + v, r.tambor.id);
-  await cargarTambores(); pintarTambores();
-  f.reset(); f.classList.add('oculto');
-  registrar(true, `Tambor ${nombreTambor(r.tambor)} de ${VARIEDADES[v]} abierto (${num(kg)} kg)`);
 }
 
 async function envasar(p, sueltas, cajas) {
   if (!p.variedad) throw new Error('El pack se registra en "Armar pack"');
   const t = tamborDe(p.variedad);
-  if (!t) throw new Error(`No hay tambor abierto de ${VARIEDADES[p.variedad]}: ábrelo arriba antes de envasar.`);
+  if (!t) throw new Error(`No hay tambor abierto de ${VARIEDADES[p.variedad]}: ábrelo en Tambores antes de envasar.`);
   const r = await rpc('op_envasar', { p_producto: p.id, p_tambor: t.id, p_sueltas: sueltas, p_cajas: cajas });
   const i = E.tambores.findIndex((x) => x.id === r.tambor.id); if (i >= 0) E.tambores[i] = r.tambor;
-  pintarTambores(); avisosDe(r);
-  const que = cajas ? `+${cajas} caja de 12` : !p.uds_por_caja ? '+1 balde' : sueltas === 1 ? '+1 frasco' : `+${sueltas} u`;
-  registrar(true, `${p.nombre} ${que} · stock ${textoStock(r.stock)} · tambor ${nombreTambor(r.tambor)}: quedan ${num(r.tambor.kg_restantes)} kg`);
+  pintarUsos(); avisosDe(r);
+  const que = cajas ? '+1 caja de 12' : !p.uds_por_caja ? '+1 balde' : sueltas === 1 ? '+1 frasco' : `+${sueltas} unidades`;
+  registrar(true, `${p.nombre} ${que}. Stock: ${textoStock(p, r.stock.sueltas, r.stock.cajas)}. Tambor ${nombreTambor(r.tambor)}: quedan ${num(r.tambor.kg_restantes)} kg`,
+    { op: r.operacion, alDeshacer: async () => { await cargarTambores(); pintarUsos(); } });
 }
 
 // ───────── Encajar y armar pack ─────────
 
 PANTALLAS.encajar = () => {
-  app.innerHTML = `<h2>Encajar</h2>
-  <p class="nota">Pistolea el código de la caja: suma 1 caja y resta 12 frascos sueltos. Solo 300 g y 550 g.</p>
-  ${htmlPistola('Pistolea la caja')}`;
+  app.innerHTML = guia('encajar', [
+    'Toma 12 frascos sueltos del mismo producto y ponlos en su caja.',
+    'Pistolea el <b>código de la caja</b> (no el del frasco). Suma 1 caja y resta 12 sueltos.',
+    'Solo para 300 g y 550 g, que son las cajas con código.',
+  ]) + htmlPistola('Pistolea la caja');
   activarPistola(async (cod) => {
     const { p, tipo } = buscarCodigo(cod);
     if (tipo !== 'caja') throw new Error(`${p.nombre}: ese es el código del frasco. Pistolea el de la caja.`);
     const r = await rpc('op_encajar', { p_producto: p.id, p_cajas: 1 });
-    avisosDe(r); registrar(true, `${p.nombre} +1 caja · stock ${textoStock(r.stock)}`);
+    avisosDe(r); registrar(true, `${p.nombre}: +1 caja. Stock: ${textoStock(p, r.stock.sueltas, r.stock.cajas)}`, { op: r.operacion });
   });
 };
 
 PANTALLAS.pack = () => {
-  app.innerHTML = `<h2>Armar pack</h2>
-  <p class="nota">Pistolea la cajita del Pack Variedades: suma 1 pack y resta 1 frasco suelto de Ulmo, Bosque Nativo y Quillay 300 g.</p>
-  ${htmlPistola('Pistolea la cajita del pack')}
-  <button type="button" class="sec" id="packManual">+1 pack sin pistolear</button>`;
+  app.innerHTML = guia('pack', [
+    'Arma la cajita con 1 frasco de Ulmo, 1 de Bosque Nativo y 1 de Quillay de 300 g.',
+    'Pistolea el <b>código de la cajita</b>. Suma 1 pack y resta 1 frasco suelto de cada variedad.',
+  ]) + htmlPistola('Pistolea la cajita del pack') + '<button type="button" class="sec" id="packManual">+1 pack sin pistolear</button>';
   const armar = async () => {
     const r = await rpc('op_armar_pack', { p_cantidad: 1 });
-    avisosDe(r); registrar(true, `+1 pack · ${num(r.stock?.sueltas)} armados · resta 1 frasco de cada 300 g`);
+    avisosDe(r); registrar(true, `+1 pack (${plural(r.stock?.sueltas, 'pack armado', 'packs armados')}). Se restó 1 frasco de cada 300 g`, { op: r.operacion });
   };
   $('#packManual').onclick = () => encolar(armar);
   activarPistola(async (cod) => {
@@ -355,36 +451,48 @@ PANTALLAS.pack = () => {
 // ───────── Por retirar ─────────
 
 PANTALLAS.pedidos = async () => {
-  app.innerHTML = `<h2>Por retirar</h2><p class="nota">Pedidos y facturas comprometidos. Tócalos para prepararlos pistoleando o marcarlos retirados.</p><div id="lista" class="lista"><p class="nota">Cargando…</p></div>`;
-  const { data, error } = await sb.from('v_pedidos').select('*').eq('estado', 'por_retirar').order('creado_en');
-  if (error) throw new Error(error.message);
+  app.innerHTML = guia('pedidos', [
+    'Aquí están los pedidos y facturas que esperan retiro. Su stock ya está reservado.',
+    'Toca uno para prepararlo pistoleando cada caja o frasco (opcional en facturas, pero ayuda a no equivocarse).',
+    'Cuando lo retiren, aprieta <b>Marcar retirado</b>: recién ahí sale del stock.',
+  ]) + `<div class="fila-botones"><button class="sec" data-ir="pedido">+ Nuevo pedido</button><button class="sec" data-ir="factura">+ Subir factura</button></div>
+  <div id="lista" class="lista"><p class="nota">Cargando…</p></div>`;
+  const data = await consulta(sb.from('v_pedidos').select('*').eq('estado', 'por_retirar').order('creado_en'));
   const l = $('#lista'); if (!l) return;
   l.innerHTML = data.length ? data.map((p) => {
     const total = p.cajas + p.unidades; const prep = p.cajas_prep + p.unidades_prep;
     return `<button class="pedido ${p.completo ? 'listo' : ''}" data-ir="preparar" data-id="${p.id}">
       <b>${esc(p.etiqueta)}</b>
       <span>${resumenCant(p.cajas, p.unidades)}${p.oc ? ` · OC ${esc(p.oc)}` : ''}${p.nota ? ` · ${esc(p.nota)}` : ''}</span>
+      <span class="chico">Cargado por ${esc(quien(p.creado_por))} el ${fecha(p.creado_en)}</span>
       <span class="progreso">${p.completo ? 'Listo para retirar' : `Pistoleado ${prep} de ${total}`}</span></button>`;
   }).join('') : '<p class="nota">No hay pedidos ni facturas por retirar.</p>';
 };
 
 PANTALLAS.preparar = async ({ id }) => {
-  app.innerHTML = `<button type="button" class="volver sec" data-ir="pedidos">← Por retirar</button>
-  <h2 id="titPed">Cargando…</h2><p id="resPed" class="nota"></p>
-  ${htmlPistola('Pistolea cada frasco o caja de este pedido')}
-  <section class="tarjeta"><table class="lineas" id="lineas"></table></section>
-  <button type="button" class="grande" id="btnRetirar"><b>Marcar retirado</b><span>Sale del stock lo que dice el pedido</span></button>`;
+  app.innerHTML = `<h2 id="titPed">Cargando…</h2><p id="resPed" class="nota"></p>` + guia('preparar', [
+    'Pistolea cada caja o frasco a medida que lo juntas. La línea avanza y te avisa si sobra o no está en el pedido.',
+    'Los productos sin código (baldes) tienen un botón <b>+1</b>.',
+    'Cuando lo retiren, aprieta <b>Marcar retirado</b>.',
+  ]) + `${htmlPistola('Pistolea cada frasco o caja de este pedido')}
+  <section class="tarjeta"><table class="tabla" id="lineas"></table></section>
+  <button type="button" class="grande" id="btnRetirar"><b>Marcar retirado</b><span>Sale del stock lo que dice el pedido</span></button>
+  <div class="fila-botones"><button type="button" class="peligro mini" id="btnAnularPed">Anular este pedido</button></div>`;
   activarPistola(async (cod) => { const { p, tipo } = buscarCodigo(cod); await preparar(id, p, tipo); });
   $('#btnRetirar').onclick = () => encolar(() => retirar(id));
-  const [p, l] = await Promise.all([
-    sb.from('v_pedidos').select('*').eq('id', id).single(),
-    sb.from('v_pedido_lineas').select('*').eq('pedido_id', id).order('orden'),
-  ]);
-  if (p.error || l.error) throw new Error((p.error || l.error).message);
-  if (E.pantalla !== 'preparar' || E.ctx.id !== id) return;
-  E.ctx.pedido = p.data; E.ctx.lineas = l.data;
-  pintarPedido();
+  $('#btnAnularPed').onclick = () => encolar(() => anularPedido(id));
+  await cargarPedido(id);
 };
+
+async function cargarPedido(id) {
+  const [p, l] = await Promise.all([
+    consulta(sb.from('v_pedidos').select('*').eq('id', id).single()),
+    consulta(sb.from('v_pedido_lineas').select('*').eq('pedido_id', id).order('orden')),
+  ]);
+  if (E.pantalla !== 'preparar' || E.ctx.id !== id) return;
+  E.ctx.pedido = p; E.ctx.lineas = l;
+  pintarPedido();
+}
 
 const tieneCodigo = (prod, unidad) => [...E.codigos.values()].some((c) => c.producto_id === prod && c.tipo === unidad);
 
@@ -393,10 +501,13 @@ function pintarPedido() {
   const total = p.cajas + p.unidades; const prep = p.cajas_prep + p.unidades_prep;
   $('#titPed').textContent = p.etiqueta;
   $('#resPed').textContent = `${resumenCant(p.cajas, p.unidades)}${p.oc ? ` · OC ${p.oc}` : ''} · pistoleado ${prep} de ${total}`
-    + (p.estado !== 'por_retirar' ? ` · ${p.estado.replace('_', ' ')}` : '');
-  $('#lineas').innerHTML = '<tr><th>Producto</th><th>Pide</th><th>Listo</th><th></th></tr>' + ls.map((l) =>
-    `<tr class="${l.faltan === 0 ? 'ok' : ''}"><td>${esc(l.producto)}</td><td>${l.cantidad} ${l.unidad === 'caja' ? 'cj' : 'u'}</td><td>${l.preparado}</td>
-     <td>${!tieneCodigo(l.producto_id, l.unidad) && l.faltan > 0 ? `<button type="button" class="mini" data-linea="${l.id}">+1</button>` : ''}</td></tr>`).join('');
+    + (p.estado !== 'por_retirar' ? ` · ${p.estado === 'retirado' ? 'RETIRADO' : 'ANULADO'}` : '');
+  const abierto = p.estado === 'por_retirar';
+  $('#btnRetirar').classList.toggle('oculto', !abierto);
+  $('#btnAnularPed').classList.toggle('oculto', !abierto);
+  $('#lineas').innerHTML = '<tr><th>Producto</th><th class="num">Pide</th><th class="num">Listo</th><th></th></tr>' + ls.map((l) =>
+    `<tr class="${l.faltan === 0 ? 'ok' : ''}"><td>${esc(l.producto)}</td><td class="num">${plural(l.cantidad, l.unidad === 'caja' ? 'caja' : 'unidad', l.unidad === 'caja' ? 'cajas' : 'unidades')}</td><td class="num">${l.preparado}</td>
+     <td>${abierto && !tieneCodigo(l.producto_id, l.unidad) && l.faltan > 0 ? `<button type="button" class="mini" data-linea="${l.id}">+1</button>` : ''}</td></tr>`).join('');
   $('#lineas').querySelectorAll('[data-linea]').forEach((b) => {
     const l = ls.find((x) => x.id === Number(b.dataset.linea));
     b.onclick = () => encolar(() => preparar(p.id, E.productos.get(l.producto_id), l.unidad));
@@ -420,7 +531,8 @@ async function preparar(id, p, unidad, desarmar = false) {
     const i = E.ctx.lineas.findIndex((x) => x.id === r.linea.id); if (i >= 0) E.ctx.lineas[i] = r.linea;
     E.ctx.pedido = r.pedido; pintarPedido();
   }
-  registrar(true, `${p.nombre} (${unidad === 'caja' ? 'caja' : 'unidad'}) · ${r.linea.faltan ? `faltan ${r.linea.faltan}` : 'línea completa'}`);
+  registrar(true, `${p.nombre} (${unidad === 'caja' ? 'caja' : 'unidad'}): ${r.linea.faltan ? `faltan ${r.linea.faltan}` : 'línea completa'}`,
+    { op: r.operacion, alDeshacer: () => cargarPedido(id) });
   if (r.pedido.completo) aviso('Pedido completo: ya puedes marcarlo retirado.', 'ok');
 }
 
@@ -428,13 +540,104 @@ async function retirar(id) {
   const p = E.ctx.pedido; if (!p) return;
   const faltan = (p.cajas + p.unidades) - (p.cajas_prep + p.unidades_prep);
   const msg = faltan > 0
-    ? `Faltan ${faltan} por pistolear. ¿Marcar retirado igual? Sale del stock lo que dice el pedido.`
+    ? `${faltan === 1 ? 'Falta 1' : `Faltan ${faltan}`} por pistolear. ¿Marcar retirado igual? Sale del stock lo que dice el pedido.`
     : `¿Confirmas que retiraron ${p.etiqueta}?`;
   if (!confirm(msg)) return;
   const r = await rpc('op_retirar', { p_pedido: id });
   avisosDe(r); pitido(true);
-  aviso(`${p.etiqueta}: retirado`, 'ok');
-  ir('pedidos');
+  aviso(`${p.etiqueta}: retirado`, 'ok', { texto: 'Deshacer', fn: () => encolar(async () => {
+    if (!confirm(`¿Deshacer el retiro de ${p.etiqueta}? Vuelve a "Por retirar".`)) return;
+    await rpc('op_anular', { p_operacion: r.operacion, p_motivo: `Retiro deshecho al momento por ${E.nombre}` });
+    aviso('Retiro deshecho: el pedido vuelve a "Por retirar".', 'ok');
+    if (E.pantalla === 'pedidos') ir('pedidos', {}, { historial: false });
+  }) });
+  volverAPantalla('pedidos');
+}
+
+// Vuelve a la pantalla de arriba sin dejar en el historial la que ya no sirve (pedido retirado o anulado)
+function volverAPantalla(p) {
+  if (history.state && history.state.desde === p) history.back(); else ir(p, {}, { reemplazar: true });
+}
+
+async function anularPedido(id) {
+  const p = E.ctx.pedido; if (!p) return;
+  const motivo = prompt(`¿Por qué se anula ${p.etiqueta}? (ej.: "cargado dos veces", "el cliente lo canceló")`);
+  if (motivo === null) return;
+  if (!motivo.trim()) throw new Error('Para anular hay que escribir el motivo.');
+  await rpc('anular_pedido', { p_pedido: id, p_motivo: motivo.trim() });
+  pitido(true); aviso(`${p.etiqueta}: anulado. Su stock queda libre.`, 'ok');
+  volverAPantalla('pedidos');
+}
+
+// ───────── Nuevo pedido ─────────
+
+PANTALLAS.pedido = async () => {
+  E.ctx.np = { destino: null, cadena: null, cd: null };
+  app.innerHTML = guia('pedido', [
+    'Elige a quién va el pedido.',
+    'Escribe cuántas cajas o unidades lleva de cada producto (deja en blanco lo que no lleva).',
+    'Al crearlo, su stock queda reservado y aparece en <b>Por retirar</b> para que lo preparen.',
+  ]) + `<section class="tarjeta"><h3>¿A quién va?</h3><div id="npDestino"></div></section>
+  <section class="tarjeta"><h3>Productos</h3>
+    <table class="tabla"><tr><th>Producto</th><th class="num">Cajas</th><th class="num">Unidades</th></tr>
+    ${[...E.productos.values()].filter((p) => p.activo).map((p) => `<tr><td>${esc(p.nombre)}</td>
+      <td class="num">${p.caja_controlada ? `<input type="number" min="0" inputmode="numeric" data-np="${p.id}" data-unidad="caja" placeholder="cajas" aria-label="Cajas de ${esc(p.nombre)}">` : '<span class="chico">—</span>'}</td>
+      <td class="num"><input type="number" min="0" inputmode="numeric" data-np="${p.id}" data-unidad="unidad" placeholder="${unidadDe(p)[1]}" aria-label="Unidades de ${esc(p.nombre)}"></td></tr>`).join('')}
+    </table>
+    <label style="margin-top:12px">Nota (opcional)<input id="npNota" placeholder="Ej.: N.º de venta de Mercado Libre"></label>
+  </section>
+  <p id="npResumen" class="nota"></p>
+  <button type="button" class="grande ancho" id="npCrear" disabled><b>Crear pedido</b><span>Queda en "Por retirar"</span></button>
+  <datalist id="clientes"></datalist>`;
+  pintarDestino();
+  app.querySelectorAll('[data-np]').forEach((i) => { i.oninput = actualizarResumenPedido; });
+  actualizarResumenPedido(); // muestra desde el inicio qué falta para habilitar "Crear pedido"
+  $('#npCrear').onclick = () => encolar(crearPedido);
+  const cl = await consulta(sb.from('v_clientes').select('*').order('ultimo', { ascending: false }).limit(200));
+  const dl = $('#clientes'); if (dl) dl.innerHTML = cl.map((c) => `<option value="${esc(c.cliente)}">`).join('');
+};
+
+function pintarDestino() {
+  const np = E.ctx.np; const c = $('#npDestino'); if (!c) return;
+  c.innerHTML = `<div class="opciones">${Object.entries(DESTINOS).map(([k, n]) => `<button type="button" data-destino="${k}" class="${np.destino === k ? 'elegida' : ''}">${n}</button>`).join('')}</div>
+    ${np.destino === 'cliente' ? `<label>Nombre del cliente<input id="npCliente" list="clientes" autocomplete="off" value="${esc(np.cliente || '')}"></label>` : ''}
+    ${np.destino === 'supermercado' ? `<p class="chico">Para supermercados lo normal es subir la factura. Usa esto solo si no hay factura.</p>
+      <div class="opciones">${Object.entries(CADENAS).map(([k, n]) => `<button type="button" data-cadena="${k}" class="${np.cadena === k ? 'elegida' : ''}">${n}</button>`).join('')}</div>
+      ${np.cadena === 'lider' ? `<div class="opciones">${Object.entries(CDS).map(([k, n]) => `<button type="button" data-cd="${k}" class="${np.cd === k ? 'elegida' : ''}">${n}</button>`).join('')}</div>` : ''}` : ''}`;
+  c.querySelectorAll('[data-destino]').forEach((b) => { b.onclick = () => { np.destino = b.dataset.destino; pintarDestino(); actualizarResumenPedido(); }; });
+  c.querySelectorAll('[data-cadena]').forEach((b) => { b.onclick = () => { np.cadena = b.dataset.cadena; if (np.cadena !== 'lider') np.cd = null; pintarDestino(); actualizarResumenPedido(); }; });
+  c.querySelectorAll('[data-cd]').forEach((b) => { b.onclick = () => { np.cd = b.dataset.cd; pintarDestino(); actualizarResumenPedido(); }; });
+  const ic = $('#npCliente'); if (ic) ic.oninput = () => { np.cliente = ic.value; actualizarResumenPedido(); };
+}
+
+function lineasPedido() {
+  const lineas = [];
+  app.querySelectorAll('[data-np]').forEach((i) => {
+    const n = parseInt(i.value, 10);
+    if (n > 0) lineas.push({ producto: i.dataset.np, unidad: i.dataset.unidad, cantidad: n });
+  });
+  return lineas;
+}
+function actualizarResumenPedido() {
+  const np = E.ctx.np; const ls = lineasPedido();
+  const cj = ls.filter((l) => l.unidad === 'caja').reduce((a, l) => a + l.cantidad, 0);
+  const u = ls.filter((l) => l.unidad === 'unidad').reduce((a, l) => a + l.cantidad, 0);
+  const falta = !np.destino ? 'Elige a quién va.' : np.destino === 'cliente' && !(np.cliente || '').trim() ? 'Escribe el nombre del cliente.'
+    : np.destino === 'supermercado' && !np.cadena ? 'Elige la cadena.' : np.cadena === 'lider' && np.destino === 'supermercado' && !np.cd ? 'Elige el CD de Líder.'
+    : !ls.length ? 'Escribe al menos una cantidad.' : '';
+  $('#npResumen').textContent = falta || `El pedido lleva ${resumenCant(cj, u)}.`;
+  $('#npCrear').disabled = !!falta;
+}
+async function crearPedido() {
+  const np = E.ctx.np; const ls = lineasPedido(); if (!ls.length || !np.destino) return;
+  $('#npCrear').disabled = true;
+  try {
+    const r = await rpc('crear_pedido', { p_destino: np.destino, p_lineas: ls, p_cliente: np.destino === 'cliente' ? (np.cliente || '').trim() : null,
+      p_cadena: np.destino === 'supermercado' ? np.cadena : null, p_cd: np.destino === 'supermercado' && np.cadena === 'lider' ? np.cd : null,
+      p_nota: $('#npNota').value.trim() || null });
+    pitido(true); aviso(`${r.pedido.etiqueta} creado: ${resumenCant(r.pedido.cajas, r.pedido.unidades)}`, 'ok');
+    ir('preparar', { id: r.pedido.id }, { reemplazar: true });
+  } catch (e) { $('#npCrear').disabled = false; throw e; }
 }
 
 // ───────── Subir factura (XML DTE de Defontana) ─────────
@@ -483,8 +686,11 @@ function parsearDTE(texto) {
 }
 
 PANTALLAS.factura = () => {
-  app.innerHTML = `<h2>Subir factura</h2>
-  <section class="tarjeta"><label class="archivo">Elige el XML de la factura (lo descargas de Defontana)
+  app.innerHTML = guia('factura', [
+    'Descarga de Defontana el <b>XML</b> de la factura (no el PDF).',
+    'Elígelo aquí abajo: la app lee sola el folio, la OC y las cajas.',
+    'Marca la cadena (y el CD si es Líder) y aprieta <b>Cargar factura</b>. Queda en <b>Por retirar</b>.',
+  ]) + `<section class="tarjeta"><label>Archivo XML de la factura
     <input type="file" id="archivoXml" accept=".xml,text/xml,application/xml"></label></section>
   <div id="fac"></div>`;
   $('#archivoXml').onchange = async (ev) => {
@@ -507,19 +713,19 @@ function pintarFactura() {
   caja.innerHTML = `<section class="tarjeta">
     <h3>Factura ${esc(f.folio)}</h3>
     <dl class="datos">
-      <dt>Fecha</dt><dd>${esc(f.fecha_emision || '—')}</dd>
+      <dt>Fecha</dt><dd>${esc(fechaCorta(f.fecha_emision) || '—')}</dd>
       <dt>Cliente</dt><dd>${esc(f.razon_social || '—')} (${esc(f.rut_receptor || 's/RUT')})</dd>
       <dt>OC</dt><dd>${esc(f.oc || '—')}</dd>
     </dl>
-    <table class="lineas"><tr><th>Producto</th><th>Cant.</th></tr>
+    <table class="tabla"><tr><th>Producto</th><th class="num">Cantidad</th></tr>
       ${f.lineas.map((l) => {
         const c = E.codigos.get(l.codigo);
         if (!c) return `<tr class="mal"><td>${esc(l.nombre)}<br><small>Código ${esc(l.codigo || 'sin código')} no registrado</small>
-          ${l.codigo ? `<br><button type="button" class="mini sec" data-ir="codigo" data-codigo="${esc(l.codigo)}">Registrar código</button>` : ''}</td><td>${num(l.cantidad)}</td></tr>`;
-        return `<tr><td>${esc(E.productos.get(c.producto_id).nombre)}</td><td>${num(l.cantidad)} ${c.tipo === 'caja' ? 'cj' : 'u'}</td></tr>`;
+          ${l.codigo ? `<br><button type="button" class="mini sec" data-ir="codigo" data-codigo="${esc(l.codigo)}">Registrar código</button>` : ''}</td><td class="num">${num(l.cantidad)}</td></tr>`;
+        return `<tr><td>${esc(E.productos.get(c.producto_id).nombre)}</td><td class="num">${plural(l.cantidad, c.tipo === 'caja' ? 'caja' : 'unidad', c.tipo === 'caja' ? 'cajas' : 'unidades')}</td></tr>`;
       }).join('')}
     </table>
-    <p class="${cuadra ? 'cuadra' : 'no-cuadra'}">Suma ${num(suma)} cajas${f.cajas_control != null ? ` · la OC dice ${f.cajas_control}` : ''}${cuadra ? (f.cajas_control != null ? ' ✓' : '') : ': no coincide'}</p>
+    <p class="${cuadra ? 'cuadra' : 'no-cuadra'}">Suma ${plural(suma, 'caja', 'cajas')}${f.cajas_control != null ? ` · la OC dice ${f.cajas_control}` : ''}${cuadra ? (f.cajas_control != null ? ' ✓' : '') : ': no coincide'}</p>
   </section>
   <section class="tarjeta">
     <h3>Cadena (obligatoria)</h3>
@@ -527,8 +733,8 @@ function pintarFactura() {
     <div class="opciones">${Object.entries(CADENAS).map(([k, n]) => `<button type="button" data-cadena="${k}" class="${f.cadena === k ? 'elegida' : ''} ${sug?.sugerida === k ? 'sugerida' : ''}">${n}</button>`).join('')}</div>
     ${f.cadena === 'lider' ? `<h3>CD de Líder</h3><div class="opciones">${Object.entries(CDS).map(([k, n]) => `<button type="button" data-cd="${k}" class="${f.cd === k ? 'elegida' : ''}">${n}</button>`).join('')}</div>` : ''}
   </section>
-  <button type="button" class="grande" id="btnCargar" ${listo ? '' : 'disabled'}><b>Cargar factura</b><span>Queda por retirar; el stock se descuenta al marcarla retirada</span></button>
-  <p class="error" id="errFac"></p>`;
+  <button type="button" class="grande ancho" id="btnCargar" ${listo ? '' : 'disabled'}><b>Cargar factura</b><span>Queda por retirar; el stock se descuenta al marcarla retirada</span></button>
+  <p class="error" id="errFac">${desconocidas.length ? 'Primero registra los códigos en rojo.' : !f.cadena ? 'Falta elegir la cadena.' : f.cadena === 'lider' && !f.cd ? 'Falta elegir el CD.' : ''}</p>`;
   E.volverA = { p: 'factura' };
   caja.querySelectorAll('[data-cadena]').forEach((b) => { b.onclick = () => { f.cadena = b.dataset.cadena; if (f.cadena !== 'lider') f.cd = null; pintarFactura(); }; });
   caja.querySelectorAll('[data-cd]').forEach((b) => { b.onclick = () => { f.cd = b.dataset.cd; pintarFactura(); }; });
@@ -542,19 +748,275 @@ function pintarFactura() {
         cadena: f.cadena, cd: f.cadena === 'lider' ? f.cd : null, xml: f.xml,
         lineas: f.lineas.map((l) => ({ codigo: l.codigo, nombre: l.nombre, cantidad: l.cantidad, precio: l.precio })),
       } });
-      pitido(true); aviso(`Factura ${f.folio} cargada: ${resumenCant(r.pedido.cajas, r.pedido.unidades)} por retirar`, 'ok');
+      pitido(true); aviso(`Factura ${f.folio} cargada: ${resumenCant(r.pedido.cajas, r.pedido.unidades)} por retirar. Si te equivocaste, ábrela en "Por retirar" y anúlala.`, 'ok');
       E.factura = null; E.volverA = null;
-      ir('pedidos');
+      ir('pedidos', {}, { reemplazar: true });
     } catch (e) { b.disabled = false; pitido(false); $('#errFac').textContent = mensaje(e); }
   };
+}
+
+// ───────── Stock ─────────
+
+PANTALLAS.stock = async () => {
+  app.innerHTML = guia('stock', [
+    '<b>En bodega</b>: lo que hay físicamente. <b>Reservado</b>: lo que ya está en pedidos o facturas por retirar.',
+    '<b>Libre</b> = en bodega − reservado. Es lo que se puede vender.',
+    'Si algo sale en rojo (negativo), hay que revisarlo con un <b>Conteo de inventario</b>.',
+  ]) + `<div class="fila-botones"><button class="sec mini" id="refrescar">Actualizar</button><button class="sec mini" data-ir="conteo">Conteo de inventario</button></div>
+  <div id="st"><p class="nota">Cargando…</p></div>`;
+  $('#refrescar').onclick = () => ir('stock', {}, { historial: false });
+  const [s, t] = await Promise.all([
+    consulta(sb.from('v_stock').select('*').eq('activo', true).order('orden')),
+    consulta(sb.from('v_tambores').select('variedad,kg_restantes,estado').in('estado', ['abierto', 'sin_abrir'])),
+  ]);
+  const c = $('#st'); if (!c) return;
+  const kg = (v, est) => t.filter((x) => x.variedad === v && (!est || x.estado === est)).reduce((a, x) => a + Number(x.kg_restantes), 0);
+  const celda = (p, su, cj) => {
+    const neg = su < 0 || cj < 0;
+    return `<span class="${neg ? 'neg' : ''}">${textoStock(p, su, cj)}</span>`;
+  };
+  // 300 y 550 g: lo libre se muestra en frascos totales (si un pedido pide sueltas y solo hay cajas, se desarma una; no es un error)
+  const libre = (x) => {
+    if (!x.caja_controlada) return celda(x, x.disp_sueltas, 0);
+    const u = x.unidades_disponibles;
+    const detalle = x.disp_cajas >= 0 && x.disp_sueltas >= 0 && x.disp_cajas > 0 ? `<br><span class="chico">${textoStock(x, x.disp_sueltas, x.disp_cajas)}</span>` : '';
+    return `<span class="${u < 0 ? 'neg' : ''}">${plural(u, 'frasco', 'frascos')}</span>${detalle}`;
+  };
+  c.innerHTML = `<section class="tarjeta"><h3>Miel en tambores</h3>
+    <table class="tabla"><tr><th>Variedad</th><th class="num">Abiertos</th><th class="num">Sin abrir</th></tr>
+      ${Object.entries(VARIEDADES).map(([v, n]) => `<tr><td>${n}</td><td class="num">${num(kg(v, 'abierto'))} kg</td><td class="num">${num(kg(v, 'sin_abrir'))} kg</td></tr>`).join('')}
+    </table><p class="chico">Detalle por tambor en <a href="#" data-ir="tambores">Tambores</a>.</p></section>
+  <section class="tarjeta"><h3>Productos</h3>
+    <table class="tabla"><tr><th>Producto</th><th class="num">Libre</th></tr>
+    ${s.map((x) => `<tr><td><b>${esc(x.nombre)}</b><br><span class="chico">En bodega: ${celda(x, x.sueltas, x.cajas)}${(x.comp_sueltas || x.comp_cajas) ? ` · Reservado: ${textoStock(x, x.comp_sueltas, x.comp_cajas)}` : ''}</span></td>
+      <td class="num disp">${libre(x)}</td></tr>`).join('')}
+    </table></section>`;
+};
+
+// ───────── Tambores ─────────
+
+PANTALLAS.tambores = async () => {
+  app.innerHTML = guia('tambores', [
+    '<b>Registrar tambor</b>: cuando llega uno, anota sus kilos (los que vienen escritos por fuera). Si ya está empezado (inventario inicial), anota los kilos que le quedan.',
+    '<b>Abrir</b>: cuando empiezas a envasar de él. Puede haber más de uno abierto por variedad.',
+    '<b>Cerrar</b>: cuando se termina. La app calcula el rendimiento y la merma.',
+    '¿Lo anotaste mal? Usa <b>Corregir</b> (kilos o nombre) o <b>Anular</b> (si se ingresó por error).',
+  ]) + `<button type="button" class="ancho" id="btnNuevoT">+ Registrar tambor</button>
+  <form id="fTambor" class="tarjeta oculto">
+    <h3>Registrar tambor</h3>
+    <label>Variedad<select name="variedad" required><option value="">Elige…</option>${Object.entries(VARIEDADES).map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
+    <label>Kilos<input name="kg" type="text" inputmode="decimal" autocomplete="off" required placeholder="Ej.: 300 o 287,5"></label>
+    <label>Nombre o identificación (opcional)<input name="ident" placeholder="Ej.: T-U4, o lo que diga el tambor"></label>
+    <label class="check"><input type="checkbox" name="abrir" checked> Lo abro ahora (voy a envasar de él)</label>
+    <div class="fila-botones"><button type="submit">Registrar</button><button type="button" class="sec" id="cancTambor">Cancelar</button></div>
+  </form>
+  <div id="listaT" class="lista"><p class="nota">Cargando…</p></div>`;
+  const f = $('#fTambor');
+  $('#btnNuevoT').onclick = () => { f.classList.remove('oculto'); $('#btnNuevoT').classList.add('oculto'); f.variedad.focus(); };
+  $('#cancTambor').onclick = () => { f.reset(); f.classList.add('oculto'); $('#btnNuevoT').classList.remove('oculto'); };
+  f.onsubmit = (ev) => { ev.preventDefault(); encolar(() => registrarTambor(f)); };
+  await pintarTambores();
+};
+
+async function pintarTambores() {
+  const lista = await consulta(sb.from('v_tambores').select('*').neq('estado', 'anulado').order('creado_en', { ascending: false }).limit(60));
+  const c = $('#listaT'); if (!c) return;
+  const grupo = (titulo, ts) => (ts.length ? `<div class="grupo">${titulo}</div>${ts.map(fichaTambor).join('')}` : '');
+  const abiertos = lista.filter((t) => t.estado === 'abierto');
+  c.innerHTML = (lista.length ? '' : '<p class="nota">Todavía no hay tambores registrados.</p>')
+    + grupo('Abiertos', abiertos) + grupo('Sin abrir', lista.filter((t) => t.estado === 'sin_abrir'))
+    + grupo('Cerrados (últimos)', lista.filter((t) => t.estado === 'cerrado').slice(0, 15));
+  c.querySelectorAll('[data-t]').forEach((b) => { b.onclick = () => encolar(() => accionTambor(b.dataset.accion, Number(b.dataset.t), lista)); });
+}
+
+function fichaTambor(t) {
+  const pct = Math.max(0, Math.min(100, (Number(t.kg_restantes) / Number(t.kg_iniciales)) * 100));
+  const etiquetas = { abierto: 'Abierto', sin_abrir: 'Sin abrir', cerrado: 'Cerrado' };
+  const botones = {
+    abierto: [['cerrar', 'Cerrar (se terminó)', 'sec'], ['corregir', 'Corregir', 'sec'], ['anular', 'Anular', 'peligro']],
+    sin_abrir: [['abrir', 'Abrir', ''], ['corregir', 'Corregir', 'sec'], ['anular', 'Anular', 'peligro']],
+    cerrado: [['reabrir', 'Reabrir', 'sec'], ['corregir', 'Corregir', 'sec']],
+  }[t.estado] || [];
+  return `<div class="ficha">
+    <div class="cabeza"><b>${VARIEDADES[t.variedad]} · ${esc(nombreTambor(t))}</b><span class="etiqueta ${t.estado}">${etiquetas[t.estado] || t.estado}</span></div>
+    ${t.estado === 'cerrado'
+      ? `<p class="kg">${num(t.kg_iniciales)} kg</p><p class="chico">Envasado ${num(t.kg_envasados)} kg · rendimiento ${num(t.rendimiento * 100)} % · merma ${num(t.merma_kg)} kg</p>`
+      : `<p class="kg">Quedan ${num(t.kg_restantes)} kg <span class="chico">de ${num(t.kg_iniciales)} kg</span></p><div class="barra"><i style="width:${pct}%"></i></div>
+         <p class="chico">Envasado ${num(t.kg_envasados)} kg</p>`}
+    <p class="chico">Registrado por ${esc(quien(t.creado_por))} el ${fechaCorta(t.ingresado_en)}${t.nota ? ` · ${esc(t.nota)}` : ''}</p>
+    <div class="fila-botones">${botones.map(([a, txt, cls]) => `<button type="button" class="mini ${cls}" data-t="${t.id}" data-accion="${a}">${txt}</button>`).join('')}</div>
+  </div>`;
+}
+
+async function registrarTambor(f) {
+  const v = f.variedad.value; const kg = Number(String(f.kg.value).replace(',', '.'));
+  if (!v) throw new Error('Elige la variedad');
+  if (!(kg > 0)) throw new Error('Escribe los kilos del tambor');
+  const abrir = f.abrir.checked;
+  if (abrir) {
+    const abiertos = E.tambores.filter((t) => t.variedad === v);
+    if (abiertos.length && confirm(`Ya hay ${abiertos.length === 1 ? 'un tambor' : abiertos.length + ' tambores'} de ${VARIEDADES[v]} abierto${abiertos.length === 1 ? '' : 's'} (${abiertos.map(nombreTambor).join(', ')}).\n\n¿Se terminó y hay que cerrarlo?\nAceptar = cerrar ${abiertos.length === 1 ? 'ese tambor' : 'esos tambores'} (lo que les quede cuenta como merma)\nCancelar = dejar${abiertos.length === 1 ? 'lo' : 'los'} abierto${abiertos.length === 1 ? '' : 's'} también`)) {
+      for (const t of abiertos) await rpc('tambor_cerrar', { p_id: t.id });
+    }
+  }
+  const r = await rpc('tambor_alta', { p_variedad: v, p_kg: kg, p_identificacion: f.ident.value.trim() || null, p_abrir: abrir });
+  if (abrir) guardar('tambor_' + v, r.tambor.id);
+  await cargarTambores();
+  pitido(true); aviso(`Tambor ${nombreTambor(r.tambor)} de ${VARIEDADES[v]} registrado (${num(kg)} kg)${abrir ? ' y abierto' : ''}.`, 'ok');
+  f.reset(); f.classList.add('oculto'); $('#btnNuevoT').classList.remove('oculto');
+  await pintarTambores();
+}
+
+async function accionTambor(accion, id, lista) {
+  const t = lista.find((x) => x.id === id); if (!t) return;
+  const nombre = `${VARIEDADES[t.variedad]} ${nombreTambor(t)}`;
+  if (accion === 'abrir') {
+    const otros = lista.filter((x) => x.variedad === t.variedad && x.estado === 'abierto');
+    if (otros.length && confirm(`Ya hay ${otros.length === 1 ? 'otro tambor' : otros.length + ' tambores'} de ${VARIEDADES[t.variedad]} abierto${otros.length === 1 ? '' : 's'}: ${otros.map((x) => `${nombreTambor(x)} (quedan ${num(x.kg_restantes)} kg)`).join(', ')}.\n\n¿Se terminó y lo cierras? Lo que le quede cuenta como merma.\nAceptar = cerrar ese · Cancelar = dejarlo abierto también`)) {
+      for (const x of otros) await rpc('tambor_cerrar', { p_id: x.id });
+    }
+    await rpc('tambor_abrir', { p_id: id }); guardar('tambor_' + t.variedad, id);
+  } else if (accion === 'cerrar') {
+    if (!confirm(`¿Cerrar el tambor ${nombre}? Quedan ${num(t.kg_restantes)} kg según la app; eso queda como merma.`)) return;
+    await rpc('tambor_cerrar', { p_id: id });
+  } else if (accion === 'reabrir') {
+    if (!confirm(`¿Reabrir el tambor ${nombre}?`)) return;
+    await rpc('tambor_reabrir', { p_id: id });
+  } else if (accion === 'corregir') {
+    const kg = prompt(`Kilos correctos del tambor ${nombre} (los que traía al registrarlo):`, String(t.kg_iniciales));
+    if (kg === null) return;
+    const ident = prompt('Nombre o identificación (puedes dejarlo igual):', t.identificacion || '');
+    if (ident === null) return;
+    const kgN = Number(String(kg).replace(',', '.'));
+    if (!(kgN > 0)) throw new Error('Escribe los kilos del tambor (solo números, ej.: 287,5)');
+    if (kgN < Number(t.kg_envasados) && !confirm(`De este tambor ya se envasaron ${num(t.kg_envasados)} kg, más que ${num(kgN)} kg: quedaría en negativo. ¿Corregir igual?`)) return;
+    await rpc('tambor_corregir', { p_id: id, p_kg: kgN, p_identificacion: ident });
+  } else if (accion === 'anular') {
+    const motivo = prompt(`¿Por qué se anula el tambor ${nombre}? (ej.: "lo registré dos veces")`);
+    if (motivo === null) return;
+    await rpc('tambor_anular', { p_id: id, p_motivo: motivo });
+  }
+  pitido(true); aviso('Listo.', 'ok');
+  await cargarTambores(); await pintarTambores();
+}
+
+// ───────── Historial (con Deshacer) ─────────
+
+PANTALLAS.historial = async () => {
+  E.ctx.limite = 40;
+  app.innerHTML = guia('historial', [
+    'Aquí queda todo lo registrado, con quién y cuándo. Lo más nuevo arriba.',
+    '<b>Deshacer</b> crea un movimiento contrario: nada se borra, queda la huella.',
+    'Para deshacer un retiro, el pedido vuelve a "Por retirar".',
+  ]) + `<div id="hist" class="lista"><p class="nota">Cargando…</p></div>
+  <button type="button" class="sec ancho oculto" id="masHist">Ver más</button>`;
+  $('#masHist').onclick = () => { E.ctx.limite += 40; pintarHistorial(); };
+  await pintarHistorial();
+};
+
+async function pintarHistorial() {
+  const lim = E.ctx.limite;
+  const data = await consulta(sb.from('v_historial').select('*').order('fecha', { ascending: false }).limit(lim + 1));
+  const c = $('#hist'); if (!c) return;
+  const items = data.slice(0, lim);
+  $('#masHist').classList.toggle('oculto', data.length <= lim);
+  c.innerHTML = items.length ? items.map((o) => `<div class="ficha mov ${o.anulada ? 'anulada' : ''}">
+      <div class="cabeza"><b>${TIPOS_OP[o.tipo] || o.tipo}</b><span class="chico">${fecha(o.fecha)} · ${esc(quien(o.usuaria))}</span></div>
+      ${o.pedido ? `<div class="chico">${esc(o.pedido)}</div>` : ''}
+      <div class="resumen">${esc(o.resumen || (o.tipo === 'retiro' ? 'Salida del pedido' : ''))}</div>
+      ${o.nota ? `<div class="chico">Nota: ${esc(o.nota)}</div>` : ''}
+      ${o.anulada ? '<div class="chico">Deshecho</div>' : o.tipo !== 'anulacion' ? `<div class="fila-botones"><button type="button" class="mini sec" data-anular="${o.id}">Deshacer</button></div>` : ''}
+    </div>`).join('') : '<p class="nota">Todavía no hay nada registrado.</p>';
+  c.querySelectorAll('[data-anular]').forEach((b) => {
+    b.onclick = () => {
+      const o = items.find((x) => x.id === Number(b.dataset.anular));
+      if (!confirm(`¿Deshacer este registro?\n\n${TIPOS_OP[o.tipo]} · ${o.resumen || o.pedido || ''}`)) return;
+      encolar(async () => {
+        await rpc('op_anular', { p_operacion: o.id, p_motivo: `Deshecho desde el Historial por ${E.nombre}` });
+        pitido(true); aviso('Listo, se deshizo.', 'ok');
+        await cargarTambores(); await pintarHistorial();
+      });
+    };
+  });
+}
+
+// ───────── Conteo de inventario ─────────
+
+PANTALLAS.conteo = async () => {
+  app.innerHTML = guia('conteo', [
+    'Cuenta lo que hay <b>físicamente</b> en la bodega y escríbelo aquí, incluido lo que ya está apartado para pedidos o facturas que aún no retiran. Si es la primera vez, esto crea el inventario inicial.',
+    'Deja en blanco lo que no contaste (queda como está). Si lo contaste y no hay, escribe <b>0</b>.',
+    'Aprieta <b>Revisar</b>: la app te muestra qué va a cambiar. Al guardar, corrige solo la diferencia (se puede deshacer en el Historial).',
+    'Los tambores no van aquí: se registran en <b>Tambores</b> con los kilos que les quedan.',
+  ]) + `<section class="tarjeta"><table class="tabla" id="tablaConteo"><tr><td class="nota">Cargando…</td></tr></table>
+    <label style="margin-top:12px">Nota<input id="notaConteo"></label></section>
+  <div id="cambios"></div>
+  <div class="fila-botones"><button type="button" id="btnRevisar">Revisar</button><button type="button" class="oculto" id="btnGuardarConteo">Guardar conteo</button></div>`;
+  const [s, ops] = await Promise.all([
+    consulta(sb.from('v_stock').select('*').eq('activo', true).order('orden')),
+    sb.from('operaciones').select('id', { count: 'exact', head: true }),
+  ]);
+  const t = $('#tablaConteo'); if (!t) return;
+  E.ctx.stock = s;
+  $('#notaConteo').value = ops.count ? `Conteo ${new Date().toLocaleDateString('es-CL')}` : 'Conteo inicial';
+  t.innerHTML = '<tr><th>Producto</th><th class="num">Cajas de 12</th><th class="num">Sueltas / unidades</th></tr>' + s.map((x) => `<tr>
+      <td><b>${esc(x.nombre)}</b><br><span class="chico">La app tiene: ${textoStock(x, x.sueltas, x.cajas)}</span></td>
+      <td class="num">${x.caja_controlada ? `<input type="number" min="0" inputmode="numeric" data-conteo="${x.id}" data-campo="cajas" placeholder="cajas" aria-label="Cajas de ${esc(x.nombre)}">` : '<span class="chico">—</span>'}</td>
+      <td class="num"><input type="number" min="0" inputmode="numeric" data-conteo="${x.id}" data-campo="sueltas" placeholder="${unidadDe(x)[1]}" aria-label="Sueltas de ${esc(x.nombre)}"></td></tr>`).join('');
+  t.querySelectorAll('input').forEach((i) => { i.oninput = () => { $('#btnGuardarConteo').classList.add('oculto'); $('#cambios').innerHTML = ''; }; });
+  $('#btnRevisar').onclick = revisarConteo;
+  $('#btnGuardarConteo').onclick = () => encolar(guardarConteo);
+};
+
+// Un campo en blanco = no contado: conserva lo que la app tiene en ese campo
+// paraEnviar = true: los campos en blanco van como null y la base los deja como están en ese momento
+function leerConteo(paraEnviar = false) {
+  const filas = new Map();
+  app.querySelectorAll('[data-conteo]').forEach((i) => {
+    if (i.value === '') return;
+    const x = E.ctx.stock.find((s) => s.id === i.dataset.conteo);
+    const f = filas.get(i.dataset.conteo) || (paraEnviar ? { producto: i.dataset.conteo, sueltas: null, cajas: null }
+      : { producto: i.dataset.conteo, sueltas: x.sueltas, cajas: x.caja_controlada ? x.cajas : 0 });
+    f[i.dataset.campo] = parseInt(i.value, 10) || 0;
+    filas.set(i.dataset.conteo, f);
+  });
+  return [...filas.values()];
+}
+function revisarConteo() {
+  const items = leerConteo(); const c = $('#cambios');
+  if (!items.length) { c.innerHTML = '<p class="error">No escribiste ninguna cantidad.</p>'; return; }
+  const cambios = items.map((it) => {
+    const x = E.ctx.stock.find((s) => s.id === it.producto);
+    const dc = x.caja_controlada ? it.cajas - x.cajas : 0; const ds = it.sueltas - x.sueltas;
+    if (!dc && !ds) return null;
+    const signo = (n, uno, varios) => (n ? `${n > 0 ? '+' : '−'}${plural(Math.abs(n), uno, varios)}` : '');
+    const [uno, varios] = unidadDe(x);
+    return `<li><b>${esc(x.nombre)}</b>: la app tenía ${textoStock(x, x.sueltas, x.cajas)}, queda en ${textoStock(x, it.sueltas, it.cajas)} (${[signo(dc, 'caja', 'cajas'), signo(ds, uno, varios)].filter(Boolean).join(', ')})</li>`;
+  }).filter(Boolean);
+  if (!cambios.length) { c.innerHTML = '<p class="cuadra">Todo lo que contaste coincide con la app. No hay nada que corregir.</p>'; $('#btnGuardarConteo').classList.add('oculto'); return; }
+  c.innerHTML = `<div class="resumen-cambios"><b>Esto va a cambiar:</b><ul>${cambios.join('')}</ul></div>`;
+  $('#btnGuardarConteo').classList.remove('oculto');
+}
+async function guardarConteo() {
+  const items = leerConteo(true); if (!items.length) return;
+  const nota = $('#notaConteo').value.trim();
+  const r = await rpc('op_conteo', { p_items: items, p_nota: nota });
+  pitido(true);
+  aviso(`Conteo guardado: ${plural(r.cambios, 'producto corregido', 'productos corregidos')}.`, 'ok', { texto: 'Deshacer', fn: () => encolar(async () => {
+    if (!confirm('¿Deshacer el conteo completo? El stock vuelve a lo que tenía antes.')) return;
+    await rpc('op_anular', { p_operacion: r.operacion, p_motivo: `Conteo deshecho al momento por ${E.nombre}` });
+    aviso('Conteo deshecho.', 'ok'); if (E.pantalla === 'stock') ir('stock', {}, { historial: false });
+  }) });
+  ir('stock', {}, { reemplazar: true });
 }
 
 // ───────── Registrar código ─────────
 
 PANTALLAS.codigo = ({ codigo }) => {
-  app.innerHTML = `<h2>Registrar código</h2>
-  <p class="nota">Para una etiqueta que la app no reconoce: pistoléala y elige a qué producto corresponde.</p>
-  ${htmlPistola('Pistolea la etiqueta nueva')}
+  app.innerHTML = guia('codigo', [
+    'Úsalo cuando la pistola lee una etiqueta que la app no conoce.',
+    'Pistolea la etiqueta (o escribe el número), elige el producto y si es de frasco o de caja.',
+  ]) + `${htmlPistola('Pistolea la etiqueta nueva')}
   <form id="fCod" class="tarjeta">
     <label>Código<input name="codigo" inputmode="numeric" required value="${esc(codigo || '')}"></label>
     <label>Producto<select name="producto" required><option value="">Elige…</option>
@@ -569,7 +1031,7 @@ PANTALLAS.codigo = ({ codigo }) => {
   activarPistola(async (cod) => {
     const c = E.codigos.get(cod);
     if (c) throw new Error(`Ese código ya es de ${E.productos.get(c.producto_id).nombre} (${c.tipo})`);
-    f.codigo.value = cod; registrar(true, `Código ${cod} leído: elige el producto y registra`);
+    f.codigo.value = cod; registrar(true, `Código ${cod} leído: elige el producto y aprieta Registrar`);
   });
   f.onsubmit = (ev) => {
     ev.preventDefault();
@@ -583,6 +1045,30 @@ PANTALLAS.codigo = ({ codigo }) => {
       if (v) ir(v.p, { id: v.id }); else { f.reset(); registrar(true, `Código ${r.codigo} registrado`); }
     });
   };
+};
+
+// ───────── Ayuda ─────────
+
+PANTALLAS.ayuda = () => {
+  app.innerHTML = `<section class="tarjeta"><h3>Cómo funciona</h3>
+    <p>Cada cosa que pasa en la bodega se registra pistoleando: envasar, juntar cajas, preparar y retirar pedidos. Con eso la app calcula sola el stock y los kilos de cada tambor. Nada se borra: si alguien se equivoca, se deshace y queda anotado quién y cuándo.</p></section>
+  <section class="tarjeta"><h3>Primer día</h3><ol>
+    <li>En <b>Tambores</b>, registra cada tambor con sus kilos (si está empezado, los kilos que le quedan) y abre los que estás usando.</li>
+    <li>En <b>Conteo de inventario</b>, escribe cuántas cajas y frascos sueltos hay de cada producto.</li>
+    <li>Desde ahí, cada envasado, caja, pedido y retiro se registra en su pantalla.</li></ol></section>
+  <section class="tarjeta"><h3>Conectar la pistola</h3>
+    <p>La pistola funciona como un teclado: lee el código, lo "escribe" y aprieta Enter. Por eso sirve con cualquier aparato:</p><ul>
+    <li><b>Computador</b>: enchúfala por USB y listo.</li>
+    <li><b>Celular o tablet Android</b>: si es inalámbrica, emparéjala en Ajustes → Bluetooth (en modo teclado, "HID"; el manual de la pistola trae el código para activarlo). Si es con cable, necesitas un adaptador USB-C a USB (OTG).</li>
+    <li><b>Probar</b>: abre Envasar. El recuadro "Esperando la pistola" debe estar marcado; pistolea un frasco y debe aparecer la línea con un pitido.</li></ul>
+    <p class="chico">El celular no abre su teclado en ese recuadro, para que no tape la pantalla. Si necesitas escribir un código, usa "Escribir a mano".</p></section>
+  <section class="tarjeta"><h3>Si me equivoco</h3><ul>
+    <li>Justo después: toca <b>Deshacer</b> en la línea.</li>
+    <li>Más tarde: entra al <b>Historial</b> y toca <b>Deshacer</b> en ese registro.</li>
+    <li>Un pedido o factura mal cargado: ábrelo en <b>Por retirar</b> y toca <b>Anular este pedido</b>.</li>
+    <li>Un tambor mal anotado: en <b>Tambores</b>, usa <b>Corregir</b> o <b>Anular</b>.</li></ul></section>
+  <section class="tarjeta"><h3>Pedidos y facturas</h3>
+    <p>Al cargarlos, su stock queda <b>reservado</b> (no se puede vender dos veces), pero sigue en la bodega. Recién al apretar <b>Marcar retirado</b> sale del stock.</p></section>`;
 };
 
 iniciar();
