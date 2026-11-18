@@ -446,12 +446,12 @@ PANTALLAS.inicio = async () => {
   <div class="menu">
     <button class="grande" data-ir="envasar"><b>Envasar</b><span>Registra frascos y cajas que salen del tambor</span></button>
     <button class="grande" data-ir="encajar"><b>Encajar</b><span>Cajas de 12, cajas de 10 y Pack Variedades 3 × 300 g</span></button>
-    <button class="grande" data-ir="pedidos"><b>Pedidos <span class="contador oculto" id="nPend"></span></b><span>Pendientes y listos: prepararlos y marcarlos retirados</span></button>
+    <button class="grande" data-ir="pedidos"><b>Pedidos <span class="contador oculto" id="nPend"></span></b><span id="subPedidos">Armar los pendientes y marcar retirados</span></button>
   </div>
-  <div class="grupo">Cargar</div>
+  <div class="grupo">Cargar pedidos</div>
   <div class="menu">
-    <button class="grande claro" data-ir="factura"><b>Subir factura</b><span>XML de Defontana (supermercados)</span></button>
-    <button class="grande claro" data-ir="pedido"><b>Nuevo pedido</b><span>Mercado Libre, clientes, Berni y otros</span></button>
+    <button class="grande claro" data-ir="factura"><b>Subir factura</b><span>Carga un pedido de supermercado desde el XML (no lo arma)</span></button>
+    <button class="grande claro" data-ir="pedido"><b>Nuevo pedido</b><span>Carga a mano: Mercado Libre, clientes, Berni y otros</span></button>
   </div>
   <div class="grupo">Ver y corregir</div>
   <div class="menu">
@@ -462,11 +462,15 @@ PANTALLAS.inicio = async () => {
     <button class="grande claro" data-ir="config"><b>Configuración</b><span>Nombres, códigos de barra y avisos</span></button>
     <button class="grande claro" data-ir="ayuda"><b>Ayuda</b><span>Cómo funciona, la pistola, primer día</span></button>
   </div>`;
-  const [pend, ops] = await Promise.all([
-    sb.from('pedidos').select('id', { count: 'exact', head: true }).eq('estado', 'por_retirar'),
+  const [peds, ops] = await Promise.all([
+    sb.from('v_pedidos').select('completo').eq('estado', 'por_retirar'),
     sb.from('operaciones').select('id', { count: 'exact', head: true }),
   ]);
-  const n = $('#nPend'); if (n && pend.count) { n.textContent = pend.count; n.classList.remove('oculto'); }
+  const lista = peds.data || [];
+  const nPend = lista.filter((x) => !x.completo).length; const nListos = lista.length - nPend;
+  const n = $('#nPend'); if (n && nPend) { n.textContent = nPend; n.classList.remove('oculto'); }
+  const sp = $('#subPedidos');
+  if (sp && lista.length) sp.textContent = `${plural(nPend, 'pendiente por armar', 'pendientes por armar')} · ${plural(nListos, 'listo para retirar', 'listos para retirar')}`;
   const pp = $('#primerPaso');
   if (pp && ops.count === 0) {
     pp.innerHTML = enlazar(`<div class="aviso-inicio"><strong>Primer paso: crea el inventario.</strong><br>
@@ -591,34 +595,41 @@ async function armarPack() {
 
 // ───────── Pedidos ─────────
 
+// Un pedido pasa por tres estados: PENDIENTE (cargado, por armar) → POR RETIRAR (armado y embalado) → RETIRADO (salió del stock)
 PANTALLAS.pedidos = async () => {
-  app.innerHTML = guia('pedidos', [
-    'Aquí están los pedidos y facturas que esperan retiro. Su stock ya está apartado: en <b>Stock</b> aparece como «Por retirar».',
-    'Toca uno para prepararlo pistoleando cada caja o frasco (opcional en facturas, pero ayuda a no equivocarse).',
-    'Cuando lo retiren, aprieta <b>Marcar retirado</b>: recién ahí sale del stock.',
+  app.innerHTML = guia('pedidos_v2', [
+    '<b>Subir factura</b> o <b>Nuevo pedido</b> solo <b>cargan</b> el pedido: queda en <b>Pendientes</b>, por armar.',
+    'Para armarlo, ábrelo y pistolea cada caja o frasco a medida que lo juntas (o toca <b>Marcar armado</b>). Cuando está completo pasa a <b>Por retirar</b>.',
+    'Cuando sale de la bodega, ábrelo en Por retirar y toca <b>Marcar retirado</b>: recién ahí se descuenta del stock.',
   ]) + `<div class="fila-botones"><button class="sec" data-ir="pedido">+ Nuevo pedido</button><button class="sec" data-ir="factura">+ Subir factura</button></div>
-  <div id="lista" class="lista"><p class="nota">Cargando…</p></div>`;
+  <div id="lista"><p class="nota">Cargando…</p></div>`;
   const data = await consulta(sb.from('v_pedidos').select('*').eq('estado', 'por_retirar').order('creado_en'));
   const l = $('#lista'); if (!l) return;
-  l.innerHTML = data.length ? data.map((p) => {
+  const ficha = (p) => {
     const total = p.cajas + p.unidades; const prep = p.cajas_prep + p.unidades_prep;
     return `<button class="pedido ${p.completo ? 'listo' : ''}" data-ir="preparar" data-id="${p.id}">
       <b>${esc(p.etiqueta)}</b>
-      <span>${resumenCant(p.cajas, p.unidades)}${p.oc ? ` · OC ${esc(p.oc)}` : ''}${p.nota ? ` · ${esc(p.nota)}` : ''}</span>
+      <span>${resumenCant(p.cajas, p.unidades)}${p.nota ? ` · ${esc(p.nota)}` : ''}</span>
       <span class="chico">Cargado por ${esc(quien(p.creado_por))} el ${fecha(p.creado_en)}</span>
-      <span class="progreso">${p.completo ? 'Listo para retirar' : `Pistoleado ${prep} de ${total}`}</span></button>`;
-  }).join('') : '<p class="nota">No hay pedidos ni facturas pendientes.</p>';
+      <span class="progreso">${p.completo ? 'Armado: listo para retirar' : `Armado ${prep} de ${total}`}</span></button>`;
+  };
+  const pend = data.filter((p) => !p.completo); const listos = data.filter((p) => p.completo);
+  l.innerHTML = `<div class="grupo">Pendientes (por armar) · ${pend.length}</div>
+    <div class="lista">${pend.map(ficha).join('') || '<p class="nota">No hay pedidos por armar.</p>'}</div>
+    <div class="grupo">Por retirar (armados y embalados) · ${listos.length}</div>
+    <div class="lista">${listos.map(ficha).join('') || '<p class="nota">No hay pedidos esperando retiro.</p>'}</div>`;
 };
 
 PANTALLAS.preparar = async ({ id }) => {
-  app.innerHTML = `<h2 id="titPed">Cargando…</h2><p id="resPed" class="nota"></p>` + guia('preparar', [
-    'Pistolea cada caja o frasco a medida que lo juntas. La línea avanza y te avisa si sobra o no está en el pedido.',
-    'Si son varios iguales (ej.: 10 frascos de 1 kg), toca <b>×10</b> y pistolea uno solo.',
-    'Los productos sin código (baldes) tienen un botón <b>+1</b>.',
-    'Cuando lo retiren, aprieta <b>Marcar retirado</b>.',
+  app.innerHTML = `<h2 id="titPed">Cargando…</h2><p id="resPed" class="nota"></p>` + guia('preparar_v2', [
+    'Para armar el pedido, pistolea cada caja o frasco a medida que lo juntas. La línea avanza y te avisa si sobra o no está en el pedido.',
+    'Si son varios iguales (ej.: 10 frascos de 1 kg), toca <b>×10</b> y pistolea uno solo. Lo que no tiene código: <b>+1</b> o <b>Escribir a mano</b>.',
+    'Si lo armaste sin pistolear, toca <b>Marcar armado</b>. Con todo armado pasa a «Por retirar».',
+    'Cuando sale de la bodega, toca <b>Marcar retirado</b> (solo se puede con el pedido armado).',
   ]) + `${htmlPistola('Pistolea cada frasco o caja de este pedido', htmlMultiplicador())}
   <section class="tarjeta"><table class="tabla" id="lineas"></table></section>
-  <button type="button" class="grande" id="btnRetirar"><b>Marcar retirado</b><span>Sale del stock lo que dice el pedido</span></button>
+  <button type="button" class="grande sec oculto" id="btnArmado"><b>Marcar armado</b><span>Lo armé sin pistolear: completa lo que falta</span></button>
+  <button type="button" class="grande" id="btnRetirar"><b>Marcar retirado</b><span>Salió de la bodega: se descuenta del stock</span></button>
   <div class="fila-botones"><button type="button" class="sec mini oculto" id="btnEditarPed">Editar pedido</button><button type="button" class="sec mini oculto" id="btnCadena">Corregir cadena</button>
     <button type="button" class="peligro mini" id="btnAnularPed">Anular este pedido</button></div>`;
   pintarMult();
@@ -630,6 +641,7 @@ PANTALLAS.preparar = async ({ id }) => {
       await preparar(id, p, l.unidad, false, tomarMult());
     }, (p) => (E.ctx.lineas || []).some((l) => l.producto_id === p.id));
   $('#btnRetirar').onclick = () => encolar(() => retirar(id));
+  $('#btnArmado').onclick = () => encolar(() => marcarArmado(id));
   $('#btnAnularPed').onclick = () => encolar(() => anularPedido(id));
   $('#btnEditarPed').onclick = () => ir('pedido', { id });
   $('#btnCadena').onclick = () => encolar(() => corregirCadena(id));
@@ -666,10 +678,13 @@ function pintarPedido() {
   const p = E.ctx.pedido; const ls = E.ctx.lineas; if (!p || !$('#lineas')) return;
   const total = p.cajas + p.unidades; const prep = p.cajas_prep + p.unidades_prep;
   $('#titPed').textContent = p.etiqueta;
-  $('#resPed').textContent = `${resumenCant(p.cajas, p.unidades)}${p.oc ? ` · OC ${p.oc}` : ''} · pistoleado ${prep} de ${total}`
-    + (p.estado !== 'por_retirar' ? ` · ${p.estado === 'retirado' ? 'RETIRADO' : 'ANULADO'}` : '');
+  const estado = p.estado === 'retirado' ? 'RETIRADO' : p.estado === 'anulado' ? 'ANULADO' : p.completo ? 'Armado: por retirar' : 'Pendiente: por armar';
+  $('#resPed').textContent = `${resumenCant(p.cajas, p.unidades)} · armado ${prep} de ${total} · ${estado}`;
   const abierto = p.estado === 'por_retirar';
   $('#btnRetirar').classList.toggle('oculto', !abierto);
+  $('#btnRetirar').disabled = !p.completo;
+  $('#btnRetirar').querySelector('span').textContent = p.completo ? 'Salió de la bodega: se descuenta del stock' : 'Primero arma el pedido: pistolea todo o toca Marcar armado';
+  $('#btnArmado').classList.toggle('oculto', !abierto || p.completo);
   $('#btnAnularPed').classList.toggle('oculto', !abierto);
   $('#btnEditarPed').classList.toggle('oculto', !abierto || p.tipo !== 'pedido');
   $('#btnCadena').classList.toggle('oculto', !abierto || p.destino !== 'supermercado');
@@ -702,16 +717,23 @@ async function preparar(id, p, unidad, desarmar = false, cantidad = 1) {
   }
   registrar(true, `${p.nombre} (${cantidad > 1 ? cantidad + ' ' : ''}${unidad === 'caja' ? (cantidad > 1 ? 'cajas' : 'caja') : (cantidad > 1 ? 'unidades' : 'unidad')}): ${r.linea.faltan ? `faltan ${r.linea.faltan}` : 'línea completa'}`,
     { op: r.operacion, alDeshacer: () => cargarPedido(id) });
-  if (r.pedido.completo) aviso('Pedido completo: ya puedes marcarlo retirado.', 'ok');
+  if (r.pedido.completo) aviso('Pedido armado: pasa a «Por retirar».', 'ok');
+}
+
+async function marcarArmado(id) {
+  const p = E.ctx.pedido; if (!p) return;
+  const faltan = (p.cajas + p.unidades) - (p.cajas_prep + p.unidades_prep);
+  if (!confirm(`¿Marcar armado ${p.etiqueta}?\n\n${faltan === 1 ? 'Falta 1 por pistolear' : `Faltan ${faltan} por pistolear`}: se dan por armados (si falta armar cajas o packs, se arman; si faltan sueltas, se desarma una caja).`)) return;
+  const r = await rpc('op_marcar_armado', { p_pedido: id });
+  avisosDe(r); pitido(true); aviso(`${p.etiqueta}: armado, pasa a «Por retirar».`, 'ok');
+  registrar(true, `${p.etiqueta}: marcado armado`);
+  await cargarPedido(id);
 }
 
 async function retirar(id) {
   const p = E.ctx.pedido; if (!p) return;
-  const faltan = (p.cajas + p.unidades) - (p.cajas_prep + p.unidades_prep);
-  const msg = faltan > 0
-    ? `${faltan === 1 ? 'Falta 1' : `Faltan ${faltan}`} por pistolear. ¿Marcar retirado igual? Sale del stock lo que dice el pedido.`
-    : `¿Confirmas que retiraron ${p.etiqueta}?`;
-  if (!confirm(msg)) return;
+  if (!p.completo) throw new Error('Primero arma el pedido: pistolea todo o toca Marcar armado.');
+  if (!confirm(`¿Confirmas que ${p.etiqueta} salió de la bodega? Se descuenta del stock.`)) return;
   const r = await rpc('op_retirar', { p_pedido: id });
   avisosDe(r); pitido(true);
   aviso(`${p.etiqueta}: retirado`, 'ok', { texto: 'Deshacer', fn: () => encolar(async () => {
@@ -746,7 +768,7 @@ PANTALLAS.pedido = async ({ id } = {}) => {
   app.innerHTML = (id ? '<p class="aviso-inicio" id="npEditando">Cargando el pedido…</p>' : '') + guia('pedido', [
     'Elige a quién va el pedido.',
     'Escribe cuántas cajas o unidades lleva de cada producto (deja en blanco lo que no lleva).',
-    'Al crearlo, su stock queda apartado y aparece en <b>Pedidos</b> para que lo preparen.',
+    'Crear el pedido solo lo <b>carga</b>: queda pendiente en <b>Pedidos</b>, por armar, y su stock queda apartado.',
   ]) + `<section class="tarjeta"><h3>¿A quién va?</h3><div id="npDestino"></div></section>
   <section class="tarjeta"><h3>Productos</h3>
     <table class="tabla"><tr><th>Producto</th><th class="num">Cajas</th><th class="num">Unidades</th></tr>
@@ -757,7 +779,7 @@ PANTALLAS.pedido = async ({ id } = {}) => {
     <label style="margin-top:12px">Nota (opcional)<input id="npNota" placeholder="Ej.: N.º de venta de Mercado Libre"></label>
   </section>
   <p id="npResumen" class="nota"></p>
-  <button type="button" class="grande ancho" id="npCrear" disabled><b>Crear pedido</b><span>Queda pendiente en Pedidos</span></button>
+  <button type="button" class="grande ancho" id="npCrear" disabled><b>Crear pedido</b><span>Queda pendiente en Pedidos, por armar</span></button>
   <datalist id="clientes"></datalist>`;
   if (id) {
     // Cargar el pedido y dejarlo listo para editar
@@ -883,10 +905,10 @@ function parsearDTE(texto) {
 }
 
 PANTALLAS.factura = () => {
-  app.innerHTML = guia('factura', [
-    'Descarga de Defontana el <b>XML</b> de la factura (no el PDF).',
-    'Elígelo aquí abajo: la app lee sola el folio, la OC y las cajas.',
-    'Marca la cadena (y el CD si es Líder) y aprieta <b>Cargar factura</b>. Queda en <b>Pedidos</b>.',
+  app.innerHTML = guia('factura_v2', [
+    'Subir la factura es <b>cargar un pedido</b> de supermercado sin escribirlo a mano. No lo arma: queda pendiente en <b>Pedidos</b>, y se arma pistoleando.',
+    'Descarga de Defontana el <b>XML</b> de la factura (no el PDF) y elígelo aquí abajo: la app lee sola los productos y las cajas.',
+    'Marca la cadena (y el CD si es Líder) y aprieta <b>Cargar factura</b>.',
   ]) + `<section class="tarjeta"><label>Archivo XML de la factura
     <input type="file" id="archivoXml" accept=".xml,text/xml,application/xml"></label></section>
   <div id="fac"></div>`;
@@ -904,7 +926,6 @@ function pintarFactura() {
   const f = E.factura; const caja = $('#fac'); if (!f || !caja) return;
   const suma = f.lineas.reduce((a, l) => a + l.cantidad, 0);
   const desconocidas = f.lineas.filter((l) => !E.codigos.get(l.codigo));
-  const cuadra = f.cajas_control == null || suma === f.cajas_control;
   const sug = RUT_CADENA[f.rut_receptor];
   const listo = !desconocidas.length && f.cadena && (f.cadena !== 'lider' || f.cd);
   caja.innerHTML = `<section class="tarjeta">
@@ -912,7 +933,6 @@ function pintarFactura() {
     <dl class="datos">
       <dt>Fecha</dt><dd>${esc(fechaCorta(f.fecha_emision) || '—')}</dd>
       <dt>Cliente</dt><dd>${esc(f.razon_social || '—')} (${esc(f.rut_receptor || 's/RUT')})</dd>
-      <dt>OC</dt><dd>${esc(f.oc || '—')}</dd>
     </dl>
     <table class="tabla"><tr><th>Producto</th><th class="num">Cantidad</th></tr>
       ${f.lineas.map((l) => {
@@ -922,7 +942,7 @@ function pintarFactura() {
         return `<tr><td>${esc(E.productos.get(c.producto_id).nombre)}</td><td class="num">${plural(l.cantidad, c.tipo === 'caja' ? 'caja' : 'unidad', c.tipo === 'caja' ? 'cajas' : 'unidades')}</td></tr>`;
       }).join('')}
     </table>
-    <p class="${cuadra ? 'cuadra' : 'no-cuadra'}">Suma ${plural(suma, 'caja', 'cajas')}${f.cajas_control != null ? ` · la OC dice ${f.cajas_control}` : ''}${cuadra ? (f.cajas_control != null ? ' ✓' : '') : ': no coincide'}</p>
+    <p><b>Total: ${plural(suma, 'caja', 'cajas')}</b></p>
   </section>
   <section class="tarjeta">
     <h3>Cadena (obligatoria)</h3>
@@ -930,13 +950,12 @@ function pintarFactura() {
     <div class="opciones">${Object.entries(CADENAS).map(([k, n]) => `<button type="button" data-cadena="${k}" class="${f.cadena === k ? 'elegida' : ''} ${sug?.sugerida === k ? 'sugerida' : ''}">${n}</button>`).join('')}</div>
     ${f.cadena === 'lider' ? `<h3>CD de Líder</h3><div class="opciones">${Object.entries(CDS).map(([k, n]) => `<button type="button" data-cd="${k}" class="${f.cd === k ? 'elegida' : ''}">${n}</button>`).join('')}</div>` : ''}
   </section>
-  <button type="button" class="grande ancho" id="btnCargar" ${listo ? '' : 'disabled'}><b>Cargar factura</b><span>Queda pendiente en Pedidos; el stock se descuenta al marcarla retirada</span></button>
+  <button type="button" class="grande ancho" id="btnCargar" ${listo ? '' : 'disabled'}><b>Cargar factura</b><span>Queda pendiente en Pedidos, por armar</span></button>
   <p class="error" id="errFac">${desconocidas.length ? 'Primero registra los códigos en rojo.' : !f.cadena ? 'Falta elegir la cadena.' : f.cadena === 'lider' && !f.cd ? 'Falta elegir el CD.' : ''}</p>`;
   E.volverA = { p: 'factura' };
   caja.querySelectorAll('[data-cadena]').forEach((b) => { b.onclick = () => { f.cadena = b.dataset.cadena; if (f.cadena !== 'lider') f.cd = null; pintarFactura(); }; });
   caja.querySelectorAll('[data-cd]').forEach((b) => { b.onclick = () => { f.cd = b.dataset.cd; pintarFactura(); }; });
   $('#btnCargar').onclick = async () => {
-    if (!cuadra && !confirm(`La suma de la factura (${suma}) no coincide con la OC (${f.cajas_control}). ¿Cargar igual?`)) return;
     const b = $('#btnCargar'); b.disabled = true;
     try {
       const r = await rpc('cargar_factura', { p: {
@@ -945,7 +964,7 @@ function pintarFactura() {
         cadena: f.cadena, cd: f.cadena === 'lider' ? f.cd : null, xml: f.xml,
         lineas: f.lineas.map((l) => ({ codigo: l.codigo, nombre: l.nombre, cantidad: l.cantidad, precio: l.precio })),
       } });
-      pitido(true); aviso(`Factura ${f.folio} cargada: ${resumenCant(r.pedido.cajas, r.pedido.unidades)} pendientes. Si te equivocaste, ábrela en Pedidos y anúlala.`, 'ok');
+      pitido(true); aviso(`Factura ${f.folio} cargada: ${resumenCant(r.pedido.cajas, r.pedido.unidades)}, pendiente por armar en Pedidos. Si te equivocaste, ábrela y anúlala.`, 'ok');
       E.factura = null; E.volverA = null;
       ir('pedidos', {}, { reemplazar: true });
     } catch (e) { b.disabled = false; pitido(false); $('#errFac').textContent = mensaje(e); }
@@ -955,9 +974,10 @@ function pintarFactura() {
 // ───────── Stock ─────────
 
 PANTALLAS.stock = async () => {
-  app.innerHTML = guia('stock', [
-    '<b>En bodega</b>: lo que hay físicamente. <b>Por retirar</b>: lo que está en pedidos o facturas pendientes (sigue en la bodega, pero ya tiene dueño).',
-    '<b>Libre</b> = en bodega − por retirar. Es lo que se puede vender.',
+  app.innerHTML = guia('stock_v2', [
+    '<b>En bodega</b>: lo que hay físicamente. De eso, una parte ya tiene dueño:',
+    '<b>En pedidos pendientes</b>: cargado en pedidos o facturas que todavía no se arman. <b>Por retirar</b>: pedidos ya armados y embalados, esperando que los retiren.',
+    '<b>Libre</b> = en bodega − pedidos pendientes − por retirar. Es lo que se puede vender.',
     'Si algo sale en rojo (negativo), hay que revisarlo con un <b>Conteo de inventario</b>.',
   ]) + `<div class="fila-botones"><button class="sec mini" id="refrescar">Actualizar</button><button class="sec mini" data-ir="conteo">Conteo de inventario</button></div>
   <div id="st"><p class="nota">Cargando…</p></div>`;
@@ -985,8 +1005,11 @@ PANTALLAS.stock = async () => {
     </table><p class="chico">Detalle por tambor en <a href="#" data-ir="tambores">Tambores</a>.</p></section>
   <section class="tarjeta"><h3>Productos</h3>
     <table class="tabla"><tr><th>Producto</th><th class="num">Libre</th></tr>
-    ${s.map((x) => `<tr><td><b>${esc(x.nombre)}</b><br><span class="chico">En bodega: ${celda(x, x.sueltas, x.cajas)}${(x.comp_sueltas || x.comp_cajas) ? ` · Por retirar: ${textoStock(x, x.comp_sueltas, x.comp_cajas)}` : ''}</span></td>
-      <td class="num disp">${libre(x)}</td></tr>`).join('')}
+    ${s.map((x) => {
+      const pendS = x.comp_sueltas - x.listo_sueltas; const pendC = x.comp_cajas - x.listo_cajas;
+      return `<tr><td><b>${esc(x.nombre)}</b><br><span class="chico">En bodega: ${celda(x, x.sueltas, x.cajas)}${(pendS || pendC) ? ` · En pedidos pendientes: ${textoStock(x, pendS, pendC)}` : ''}${(x.listo_sueltas || x.listo_cajas) ? ` · Por retirar: ${textoStock(x, x.listo_sueltas, x.listo_cajas)}` : ''}</span></td>
+      <td class="num disp">${libre(x)}</td></tr>`;
+    }).join('')}
     </table></section>`;
 };
 
@@ -1099,37 +1122,120 @@ async function accionTambor(accion, id, lista) {
 
 // ───────── Historial (con Deshacer) ─────────
 
+// Por semana (lunes a domingo) y por día. Las acciones seguidas del mismo tipo, persona y pedido van en un solo registro;
+// al tocarlo se ve el detalle de cada una (y se deshace una por una).
+const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+const ddmm = (d) => d.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' });
+const hhmm = (iso) => new Date(iso).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+function lunesDe(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
+const TIPOS_VERBO = { envasar: 'Envasado', encajar: 'Encajado', desarmar: 'Cajas desarmadas', armar_pack: 'Packs armados', preparar: 'Armado de pedido',
+  retiro: 'Retiro', ajuste: 'Conteo o ajuste', anulacion: 'Deshecho' };
+
 PANTALLAS.historial = async () => {
-  E.ctx.limite = 40;
-  app.innerHTML = guia('historial', [
-    'Aquí queda todo lo registrado, con quién y cuándo. Lo más nuevo arriba.',
-    '<b>Deshacer</b> crea un movimiento contrario: nada se borra, queda la huella.',
-    'Si deshaces un retiro, el pedido vuelve a quedar pendiente en <b>Pedidos</b>.',
-  ]) + `<div id="hist" class="lista"><p class="nota">Cargando…</p></div>
-  <button type="button" class="sec ancho oculto" id="masHist">Ver más</button>`;
-  $('#masHist').onclick = () => { E.ctx.limite += 40; pintarHistorial(); };
+  E.ctx.semana = E.ctx.semana || 0; // 0 = esta semana, 1 = la anterior…
+  app.innerHTML = guia('historial_v2', [
+    'Todo lo registrado, por semana y por día. Las acciones seguidas van juntas: si se encajaron 9 cajas, aparece un solo registro. <b>Tócalo</b> para ver el detalle.',
+    'Usa las flechas para ver semanas anteriores.',
+    '<b>Deshacer</b> está en el detalle, para cada acción. Crea un movimiento contrario: nada se borra.',
+  ]) + `<div class="semana"><button type="button" class="sec mini" id="semAnt">← Anterior</button><div><b id="semTit"></b><br><span class="chico" id="semRango"></span></div>
+    <button type="button" class="sec mini" id="semSig">Siguiente →</button></div>
+  <div id="hist"><p class="nota">Cargando…</p></div>`;
+  $('#semAnt').onclick = () => { E.ctx.semana += 1; pintarHistorial(); };
+  $('#semSig').onclick = () => { if (E.ctx.semana > 0) { E.ctx.semana -= 1; pintarHistorial(); } };
   await pintarHistorial();
 };
 
+// Resumen de movimientos: "Ulmo 300 g: +3 cajas, −36 sueltas · Tambor T-U3: −10,8 kg"
+function resumenMovs(movs) {
+  const porProd = new Map(); const porTambor = new Map();
+  movs.forEach((m) => {
+    if (m.producto_id) {
+      const a = porProd.get(m.producto_id) || { nombre: m.producto, s: 0, c: 0, prep: 0 };
+      a.s += m.d_sueltas; a.c += m.d_cajas; a.prep += m.d_preparado; porProd.set(m.producto_id, a);
+    }
+    if (m.tambor_id && Number(m.d_kg)) porTambor.set(m.tambor, (porTambor.get(m.tambor) || 0) + Number(m.d_kg));
+  });
+  const sig = (n, uno, varios) => (n ? `${n > 0 ? '+' : '−'}${plural(Math.abs(n), uno, varios)}` : '');
+  const partes = [...porProd.entries()].map(([id, a]) => {
+    const p = E.productos.get(id) || {}; const [uno, varios] = p.id ? unidadDe(p) : ['unidad', 'unidades'];
+    const t = [sig(a.c, 'caja', 'cajas'), sig(a.s, uno, varios), a.prep ? `${a.prep > 0 ? '' : '−'}${plural(Math.abs(a.prep), 'armado', 'armados')}` : ''].filter(Boolean).join(', ');
+    return t ? `${a.nombre}: ${t}` : '';
+  }).filter(Boolean);
+  porTambor.forEach((kg, t) => { if (Math.abs(kg) > 0.0001) partes.push(`Tambor ${t || ''}: ${kg > 0 ? '+' : '−'}${num(Math.abs(kg))} kg`); });
+  return partes.join(' · ');
+}
+
 async function pintarHistorial() {
-  const lim = E.ctx.limite;
-  const data = await consulta(sb.from('v_historial').select('*').order('fecha', { ascending: false }).limit(lim + 1));
-  const c = $('#hist'); if (!c) return;
-  const items = data.slice(0, lim);
-  $('#masHist').classList.toggle('oculto', data.length <= lim);
-  c.innerHTML = items.length ? items.map((o) => `<div class="ficha mov ${o.anulada ? 'anulada' : ''}">
-      <div class="cabeza"><b>${TIPOS_OP[o.tipo] || o.tipo}</b><span class="chico">${fecha(o.fecha)} · ${esc(quien(o.usuaria))}</span></div>
-      ${o.pedido ? `<div class="chico">${esc(o.pedido)}</div>` : ''}
-      <div class="resumen">${esc(o.resumen || (o.tipo === 'retiro' ? 'Salida del pedido' : ''))}</div>
-      ${o.nota ? `<div class="chico">Nota: ${esc(o.nota)}</div>` : ''}
-      ${o.anulada ? '<div class="chico">Deshecho</div>' : o.tipo !== 'anulacion' ? `<div class="fila-botones"><button type="button" class="mini sec" data-anular="${o.id}">Deshacer</button></div>` : ''}
-    </div>`).join('') : '<p class="nota">Todavía no hay nada registrado.</p>';
-  c.querySelectorAll('[data-anular]').forEach((b) => {
+  const ini = lunesDe(new Date()); ini.setDate(ini.getDate() - 7 * E.ctx.semana);
+  const fin = new Date(ini); fin.setDate(fin.getDate() + 7);
+  const dom = new Date(fin); dom.setDate(dom.getDate() - 1);
+  $('#semTit').textContent = E.ctx.semana === 0 ? 'Esta semana' : E.ctx.semana === 1 ? 'Semana pasada' : `Semana del ${ddmm(ini)}`;
+  $('#semRango').textContent = `lunes ${ddmm(ini)} al domingo ${ddmm(dom)}`;
+  $('#semSig').disabled = E.ctx.semana === 0;
+  const c = $('#hist'); c.innerHTML = '<p class="nota">Cargando…</p>';
+  // Se trae por páginas (el servidor entrega hasta 1000 filas por consulta)
+  let filas = [];
+  for (let desde = 0; ; desde += 1000) {
+    const pag = await consulta(sb.from('v_historial_mov').select('*').gte('fecha', ini.toISOString()).lt('fecha', fin.toISOString())
+      .order('fecha', { ascending: false }).order('movimiento').range(desde, desde + 999));
+    filas = filas.concat(pag); if (pag.length < 1000) break;
+  }
+  if (!$('#hist')) return;
+  // Operaciones con sus movimientos, de la más nueva a la más antigua
+  const ops = new Map();
+  filas.forEach((f) => {
+    if (!ops.has(f.operacion)) ops.set(f.operacion, { ...f, movs: [] });
+    ops.get(f.operacion).movs.push(f);
+  });
+  const lista = [...ops.values()].filter((o) => o.tipo !== 'anulacion' || !ops.has(o.anula_a));
+  // Agrupar seguidas: mismo día, tipo, persona y pedido
+  const grupos = [];
+  lista.forEach((o) => {
+    const dia = new Date(o.fecha).toDateString();
+    const g = grupos[grupos.length - 1];
+    if (g && g.dia === dia && g.tipo === o.tipo && g.usuaria === o.usuaria && g.pedido_id === o.pedido_id) g.ops.push(o);
+    else grupos.push({ dia, tipo: o.tipo, usuaria: o.usuaria, pedido_id: o.pedido_id, pedido: o.pedido, ops: [o] });
+  });
+  E.ctx.grupos = grupos;
+  if (!grupos.length) { c.innerHTML = `<p class="nota">No hay registros ${E.ctx.semana === 0 ? 'esta semana' : 'en esa semana'}.</p>`; return; }
+  const hoy = new Date().toDateString(); const ayer = new Date(Date.now() - 864e5).toDateString();
+  let html = ''; let diaActual = null;
+  grupos.forEach((g, i) => {
+    if (g.dia !== diaActual) {
+      diaActual = g.dia; const d = new Date(g.ops[0].fecha);
+      html += `<div class="grupo">${g.dia === hoy ? 'Hoy' : g.dia === ayer ? 'Ayer' : DIAS[d.getDay()]} ${ddmm(d)}</div>`;
+    }
+    const vivas = g.ops.filter((o) => !o.anulada);
+    const resumen = resumenMovs(vivas.flatMap((o) => o.movs));
+    const horas = g.ops.length > 1 ? `${hhmm(g.ops[g.ops.length - 1].fecha)}–${hhmm(g.ops[0].fecha)}` : hhmm(g.ops[0].fecha);
+    html += `<div class="ficha mov ${vivas.length ? '' : 'anulada'}">
+      <button type="button" class="cabeza-grupo" data-grupo="${i}" aria-expanded="false">
+        <span class="cabeza"><b>${TIPOS_VERBO[g.tipo] || g.tipo}${g.ops.length > 1 ? ` · ${g.ops.length} veces` : ''}</b><span class="chico">${horas} · ${esc(quien(g.usuaria))}</span></span>
+        ${g.pedido ? `<span class="chico">${esc(g.pedido)}</span>` : ''}
+        <span class="resumen">${esc(resumen || (vivas.length ? '' : 'Todo deshecho'))}</span>
+        <span class="chico ver">Ver detalle ▾</span>
+      </button>
+      <div class="detalle oculto" id="det${i}"></div></div>`;
+  });
+  c.innerHTML = html;
+  c.querySelectorAll('[data-grupo]').forEach((b) => { b.onclick = () => abrirGrupo(Number(b.dataset.grupo), b); });
+}
+
+function abrirGrupo(i, boton) {
+  const g = E.ctx.grupos[i]; const d = $('#det' + i); if (!g || !d) return;
+  const abierto = !d.classList.contains('oculto');
+  d.classList.toggle('oculto', abierto); boton.setAttribute('aria-expanded', String(!abierto));
+  boton.querySelector('.ver').textContent = abierto ? 'Ver detalle ▾' : 'Ocultar detalle ▴';
+  if (abierto) return;
+  d.innerHTML = g.ops.map((o) => `<div class="op-fila ${o.anulada ? 'anulada' : ''}">
+      <span class="chico">${hhmm(o.fecha)}</span><span class="txt">${esc(resumenMovs(o.movs) || TIPOS_VERBO[o.tipo])}${o.nota ? ` <span class="chico">(${esc(o.nota)})</span>` : ''}</span>
+      ${o.anulada ? '<span class="chico">deshecho</span>' : o.tipo !== 'anulacion' ? `<button type="button" class="mini sec" data-anular="${o.operacion}">Deshacer</button>` : ''}</div>`).join('');
+  d.querySelectorAll('[data-anular]').forEach((b) => {
     b.onclick = () => {
-      const o = items.find((x) => x.id === Number(b.dataset.anular));
-      if (!confirm(`¿Deshacer este registro?\n\n${TIPOS_OP[o.tipo]} · ${o.resumen || o.pedido || ''}`)) return;
+      const o = g.ops.find((x) => x.operacion === Number(b.dataset.anular));
+      if (!confirm(`¿Deshacer esto?\n\n${TIPOS_VERBO[o.tipo]} ${hhmm(o.fecha)} · ${resumenMovs(o.movs)}`)) return;
       encolar(async () => {
-        await rpc('op_anular', { p_operacion: o.id, p_motivo: `Deshecho desde el Historial por ${E.nombre}` });
+        await rpc('op_anular', { p_operacion: o.operacion, p_motivo: `Deshecho desde el Historial por ${E.nombre}` });
         pitido(true); aviso('Listo, se deshizo.', 'ok');
         await cargarTambores(); await pintarHistorial();
       });
@@ -1308,11 +1414,11 @@ PANTALLAS.ayuda = () => {
     <li>Más tarde: entra al <b>Historial</b> y toca <b>Deshacer</b> en ese registro.</li>
     <li>Un pedido mal cargado: ábrelo en <b>Pedidos</b> y toca <b>Editar pedido</b> (o <b>Anular</b>). Una factura con la cadena equivocada: <b>Corregir cadena</b>.</li>
     <li>Un tambor mal anotado: en <b>Tambores</b>, usa <b>Corregir</b> o <b>Anular</b>.</li></ul></section>
-  <section class="tarjeta"><h3>Pedidos de Mercado Libre, web, clientes y encargos de Berni</h3><ol>
-    <li>Berni (o quien lo reciba) lo carga en <b>Nuevo pedido</b>, eligiendo a quién va: Mercado Libre, Creado en Chile, Berni (ventas web y lo que ella pida) o un cliente.</li>
-    <li>Aparece en <b>Pedidos</b>, con el número de pendientes en el menú. Ahí la Pipa lo abre y lo prepara pistoleando cada frasco o caja; la línea avanza y avisa si sobra o falta.</li>
-    <li>Cuando sale de la bodega (lo retira el courier, Berni o el cliente), se aprieta <b>Marcar retirado</b> y recién ahí se descuenta del stock.</li></ol>
-    <p class="chico">Las facturas de supermercado siguen el mismo camino, pero se cargan con <b>Subir factura</b>.</p></section>
+  <section class="tarjeta"><h3>Pedidos: cargar, armar y retirar</h3><ol>
+    <li><b>Cargar</b>: un pedido de supermercado se carga con <b>Subir factura</b> (lee el XML); los de Mercado Libre, Creado en Chile, Berni o clientes, con <b>Nuevo pedido</b>. Cargar no arma nada: el pedido queda <b>pendiente</b> en <b>Pedidos</b>.</li>
+    <li><b>Armar</b>: la Pipa lo abre y pistolea cada frasco o caja a medida que lo junta (o toca Marcar armado si lo armó sin pistolear). Completo, pasa a <b>Por retirar</b>.</li>
+    <li><b>Retirar</b>: cuando sale de la bodega (courier, Berni o el cliente), se toca Marcar retirado y recién ahí se descuenta del stock. Solo se puede con el pedido armado.</li></ol>
+    <p class="chico">En <b>Stock</b> se ve, por producto, cuánto está en pedidos pendientes y cuánto armado por retirar.</p></section>
   <section class="tarjeta"><h3>Varios iguales de una vez</h3>
     <p>En <b>Envasar</b> y al preparar un pedido, toca ×10, ×12 u Otra (la cantidad se escribe ahí mismo) y pistolea un solo frasco o caja: esa lectura cuenta por esa cantidad. Después vuelve sola a ×1.</p>
     <p class="chico">Los frascos de 500 g y 1 kg tienen código y se pistolean igual que los demás. Sus cajas de 10 casi nunca llevan etiqueta: se registran en <b>Encajar</b>, en el recuadro "Encajar sin pistolear".</p></section>

@@ -89,6 +89,17 @@ a.atajo { color: var(--petroleo); font-weight: 700; text-decoration: underline; 
 .minibarra { flex: none; margin-left: 6px; display: inline-block; width: 44px; height: 6px; border-radius: 99px; background: rgba(13,65,65,.12); overflow: hidden; vertical-align: middle; }
 .minibarra i { display: block; height: 100%; background: var(--var, var(--miel)); }
 
+/* Historial por semana */
+.semana { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 6px; text-align: center; }
+.cabeza-grupo { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; background: none; color: inherit; padding: 0; min-height: 0; text-align: left; border-radius: 0; }
+.cabeza-grupo .cabeza { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.cabeza-grupo .cabeza b { font: 600 17px Signika, system-ui, sans-serif; color: var(--petroleo); }
+.cabeza-grupo .ver { color: var(--petroleo); text-decoration: underline; text-decoration-style: dotted; }
+.detalle { border-top: 1px solid var(--borde); margin-top: 8px; padding-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.op-fila { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.op-fila .txt { flex: 1; }
+.op-fila.anulada .txt { text-decoration: line-through; color: var(--suave); }
+
 /* Configuración */
 .cfg { display: flex; flex-direction: column; gap: 8px; }
 .cfg-fila { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 10px; }
