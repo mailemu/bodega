@@ -21,7 +21,7 @@ const RUT_CADENA = {
 };
 const TITULOS = { inicio: 'Bodega', envasar: 'Envasar', encajar: 'Encajar y packs', pack: 'Encajar y packs', pedidos: 'Por retirar', preparar: 'Preparar pedido',
   factura: 'Subir factura', pedido: 'Nuevo pedido', stock: 'Stock', tambores: 'Tambores', historial: 'Historial', conteo: 'Conteo de inventario',
-  codigo: 'Registrar código', ayuda: 'Ayuda' };
+  codigo: 'Registrar código', ayuda: 'Ayuda', config: 'Configuración' };
 const PADRE = { preparar: 'pedidos', pedido: 'pedidos' }; // el resto vuelve al menú
 // Al editar un pedido, la pantalla de arriba es ese mismo pedido
 const padreDe = (p, ctx) => (p === 'pedido' && ctx && ctx.id ? 'preparar' : PADRE[p] || 'inicio');
@@ -58,7 +58,7 @@ function pitido(ok) {
 function aviso(texto, tipo = 'info', accion = null) {
   const d = document.createElement('div');
   d.className = 'aviso ' + tipo;
-  d.innerHTML = `<span>${esc(texto)}</span>${accion ? `<button type="button">${esc(accion.texto)}</button>` : ''}<button type="button" class="cerrar" aria-label="Cerrar">×</button>`;
+  d.innerHTML = `<span>${enlazar(esc(texto))}</span>${accion ? `<button type="button">${esc(accion.texto)}</button>` : ''}<button type="button" class="cerrar" aria-label="Cerrar">×</button>`;
   d.querySelector('.cerrar').onclick = () => d.remove();
   if (accion) d.querySelector('button').onclick = () => { d.remove(); accion.fn(); };
   $('#avisos').appendChild(d);
@@ -99,18 +99,34 @@ function htmlMultiplicador() {
 }
 function pintarMult() {
   const m = $('#mult'); if (!m) return;
+  if (E.multEditando) { // "Otra": la cantidad se escribe ahí mismo
+    m.innerHTML = `<span>Cada lectura vale</span><input type="number" id="multOtra" min="1" max="500" inputmode="numeric" placeholder="¿Cuántos?" aria-label="Cantidad por lectura">
+      <button type="button" class="mini elegida" data-mult="ok">Listo</button><button type="button" class="mini" data-mult="cancelar">Cancelar</button>`;
+    const i = $('#multOtra'); i.focus();
+    i.onkeydown = (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); aplicarOtra(); }
+      if (ev.key === 'Escape') { E.multEditando = false; pintarMult(); enfocarScan(); }
+    };
+    return;
+  }
   const fijo = [1, 10, 12].includes(E.mult);
   m.innerHTML = `<span>Cada lectura vale</span>${[1, 10, 12].map((n) => `<button type="button" class="mini ${E.mult === n ? 'elegida' : ''}" data-mult="${n}">×${n}</button>`).join('')}
     <button type="button" class="mini ${fijo ? '' : 'elegida'}" data-mult="otra">${fijo ? 'Otra' : '×' + E.mult}</button>
     ${E.mult > 1 ? '<span class="chico">(solo la próxima lectura)</span>' : ''}`;
 }
+const enfocarScan = () => { const s = $('#scan'); if (s) s.focus({ preventScroll: true }); };
+function aplicarOtra() {
+  const n = parseInt($('#multOtra')?.value, 10);
+  E.multEditando = false; E.mult = n >= 1 && n <= 500 ? n : 1; pintarMult(); enfocarScan();
+}
 function tomarMult() { const n = E.mult; if (n !== 1) { E.mult = 1; pintarMult(); } return n; }
 document.addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-mult]'); if (!b) return;
-  let n = b.dataset.mult === 'otra' ? parseInt(prompt('¿Cuánto vale la próxima lectura?', '2') || '', 10) : Number(b.dataset.mult);
-  if (!(n >= 1 && n <= 500)) n = 1;
-  E.mult = n; pintarMult();
-  const s = $('#scan'); if (s) s.focus({ preventScroll: true });
+  const v = b.dataset.mult;
+  if (v === 'otra') { E.multEditando = true; pintarMult(); return; }
+  if (v === 'ok') { aplicarOtra(); return; }
+  if (v === 'cancelar') { E.multEditando = false; pintarMult(); enfocarScan(); return; }
+  E.mult = Number(v); pintarMult(); enfocarScan();
 });
 
 function mensaje(e) {
@@ -150,7 +166,23 @@ const unidadDe = (p) => (p.caja_controlada ? ['suelta', 'sueltas'] : p.id === 'p
 // Guía plegable "Cómo se hace" (se recuerda si la usuaria la cerró)
 function guia(clave, pasos) {
   const cerrada = leer('guia_' + clave) === '1';
-  return `<details class="guia" data-guia="${clave}" ${cerrada ? '' : 'open'}><summary>Cómo se hace</summary><ol>${pasos.map((p) => `<li>${p}</li>`).join('')}</ol></details>`;
+  return `<details class="guia" data-guia="${clave}" ${cerrada ? '' : 'open'}><summary>Cómo se hace</summary><ol>${pasos.map((p) => `<li>${enlazar(p)}</li>`).join('')}</ol></details>`;
+}
+
+// Accesos directos: el nombre de una sección en un texto lleva a esa sección con un toque.
+// En textos con formato, "<b>Tambores</b>"; en avisos y lecturas, el nombre escrito tal cual.
+const ATAJOS = [['Conteo de inventario', 'conteo'], ['Registrar código', 'codigo'], ['Encajar y packs', 'encajar'], ['Nuevo pedido', 'pedido'],
+  ['Subir factura', 'factura'], ['Por retirar', 'pedidos'], ['Configuración', 'config'], ['Tambores', 'tambores'], ['Historial', 'historial'],
+  ['Envasar', 'envasar'], ['Encajar', 'encajar'], ['Armar pack', 'encajar'], ['Stock', 'stock'], ['Ayuda', 'ayuda']];
+const ATAJOS_TEXTO = ['Conteo de inventario', 'Registrar código', 'Encajar y packs', 'Nuevo pedido', 'Subir factura', 'Por retirar', 'Configuración', 'Tambores', 'Historial'];
+function enlazar(html) {
+  const link = (t) => { const a = ATAJOS.find(([n]) => n === t); return a ? `<a href="#" class="atajo" data-ir="${a[1]}">${t}</a>` : null; };
+  let s = String(html).replace(/<b>([^<]+)<\/b>/g, (m, t) => link(t) || m);
+  if (!s.includes('<')) { // solo en texto plano (avisos y lecturas): nunca dentro de etiquetas
+    const re = new RegExp(`(^|[^\\wáéíóúñ])(${ATAJOS_TEXTO.join('|')})(?=$|[^\\wáéíóúñ])`, 'g');
+    s = s.replace(re, (m, pre, t) => pre + link(t));
+  }
+  return s;
 }
 function activarGuias() {
   document.querySelectorAll('details.guia').forEach((d) => d.addEventListener('toggle', () => guardar('guia_' + d.dataset.guia, d.open ? '0' : '1')));
@@ -175,36 +207,76 @@ function htmlPistola(texto, extra = '') {
       <input id="scan" inputmode="none" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Esperando la pistola…">
       <button type="button" class="sec" id="manual">Escribir a mano</button>
     </div>
+    <ul class="sugerencias" id="sugerencias"></ul>
     <div class="estado" id="estadoScan"></div>
   </div>
   <div id="desc"></div>
   <ul id="log" class="log"></ul>`;
 }
 
-function activarPistola(alLeer) {
+// Búsqueda de productos por nombre mientras se escribe ("balde", "ulmo 1kg", "bn 300"...), sin acentos ni mayúsculas
+const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/(\d)\s*(kg|g)\b/g, '$1$2');
+function buscarProductos(q, filtro = null) {
+  const toks = norm(q).split(/\s+/).filter(Boolean);
+  if (!toks.length) return [];
+  return [...E.productos.values()].filter((p) => p.activo && (!filtro || filtro(p))).filter((p) => {
+    const texto = `${norm(p.nombre)} ${p.variedad === 'bosque_nativo' ? 'bn' : ''} ${p.id === 'pack' ? 'pack variedades' : ''}`;
+    const palabras = texto.split(/[\s,()×]+/);
+    return toks.every((t) => palabras.some((w) => w.startsWith(t)) || (t.length >= 3 && texto.includes(t)));
+  }).slice(0, 8);
+}
+
+// alLeer(código): lo que hace la pantalla con un código. alElegir(producto): con un producto elegido por nombre (opcional).
+// filtro(producto): limita las sugerencias (ej.: solo lo que lleva el pedido).
+function activarPistola(alLeer, alElegir = null, filtro = null) {
   const inp = $('#scan'); if (!inp) return;
   let manual = false;
-  const estado = () => { const s = $('#estadoScan'); if (s) s.textContent = document.activeElement === inp ? (manual ? 'Escribe el código y aprieta Enter.' : 'Lista para pistolear.') : 'Toca el recuadro para volver a pistolear.'; };
+  const estado = () => {
+    const s = $('#estadoScan'); if (!s) return;
+    s.textContent = document.activeElement !== inp ? 'Toca el recuadro para volver a pistolear.'
+      : manual ? (alElegir ? 'Escribe el código y aprieta Enter, o el nombre del producto y elígelo.' : 'Escribe el código y aprieta Enter.') : '';
+  };
+  const sug = $('#sugerencias');
+  const limpiarSug = () => { if (sug) sug.innerHTML = ''; };
+  const salirManual = () => { manual = false; inp.setAttribute('inputmode', 'none'); inp.placeholder = 'Esperando la pistola…'; };
+  const elegir = (p) => { inp.value = ''; limpiarSug(); salirManual(); encolar(() => alElegir(p)); inp.blur(); };
+  const pintarSug = () => {
+    if (!sug) return;
+    const q = inp.value.trim();
+    if (!alElegir || !/[a-zñ]/i.test(q)) { limpiarSug(); return; } // la pistola solo manda números: así no parpadea
+    const ps = buscarProductos(q, filtro);
+    sug.innerHTML = ps.length ? ps.map((p) => `<li><button type="button" data-sug="${p.id}">${esc(p.nombre)}</button></li>`).join('')
+      : `<li class="chico">${filtro ? 'Ningún producto de este pedido con ese nombre.' : 'Ningún producto con ese nombre.'}</li>`;
+    sug.querySelectorAll('[data-sug]').forEach((b) => { b.onmousedown = (ev) => ev.preventDefault(); b.onclick = () => elegir(E.productos.get(b.dataset.sug)); });
+  };
   const enfocar = () => {
     if ($('#scan') !== inp) return; // ya se cambió de pantalla
     const a = document.activeElement;
     if (a && a !== inp && a.matches('input, select, textarea')) { estado(); return; } // no robar el foco a otro campo
     inp.focus({ preventScroll: true }); estado();
   };
+  inp.addEventListener('input', pintarSug);
   inp.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') { inp.value = ''; limpiarSug(); return; }
     if (ev.key !== 'Enter' && ev.key !== 'Tab') return;
     ev.preventDefault();
-    const v = inp.value.trim(); inp.value = '';
+    const v = inp.value.trim();
+    if (alElegir && /[a-zñ]/i.test(v)) { const ps = buscarProductos(v, filtro); if (ps.length) elegir(ps[0]); return; } // Enter con texto = primera sugerencia
+    inp.value = ''; limpiarSug();
     if (v) encolar(() => alLeer(v));
-    if (manual) { manual = false; inp.setAttribute('inputmode', 'none'); inp.blur(); }
+    if (manual) { salirManual(); inp.blur(); }
   });
   inp.addEventListener('focus', estado);
   inp.addEventListener('blur', () => setTimeout(() => {
     // Si dejó "Escribir a mano" sin terminar, vuelve al modo pistola (si no, el teclado reaparece cada vez)
-    if (manual && document.activeElement !== inp) { manual = false; inp.setAttribute('inputmode', 'none'); }
+    if (manual && document.activeElement !== inp) { salirManual(); limpiarSug(); }
     enfocar();
   }, 150));
-  $('#manual').onclick = () => { manual = true; inp.setAttribute('inputmode', 'numeric'); inp.blur(); setTimeout(() => { inp.focus(); estado(); }, 30); };
+  $('#manual').onclick = () => {
+    manual = true; inp.setAttribute('inputmode', 'text');
+    inp.placeholder = alElegir ? 'Código o producto (ej.: balde)' : 'Escribe el código';
+    inp.blur(); setTimeout(() => { inp.focus(); estado(); }, 30);
+  };
   enfocar(); pintarLog();
 }
 
@@ -217,10 +289,11 @@ function registrar(ok, texto, extra = {}) {
 }
 function pintarLog() {
   const ul = $('#log'); if (!ul) return;
-  ul.innerHTML = E.log.map((l) => `<li class="${l.deshecho ? 'deshecho' : l.ok ? 'ok' : 'mal'}">
-      <div class="txt"><span class="hora">${esc(l.hora)}${l.deshecho ? ' · deshecho' : ''}</span>${esc(l.texto)}</div>
-      ${l.op && !l.deshecho ? `<button type="button" class="mini sec" data-deshacer="${l.id}">Deshacer</button>` : ''}</li>`).join('')
-    || '<li class="vacio">Aquí vas a ver cada lectura. Si te equivocas, toca "Deshacer" en esa línea.</li>';
+  // Vacío hasta la primera lectura. Lo deshecho queda tachado, chico y sin hora.
+  ul.innerHTML = E.log.map((l) => (l.deshecho
+    ? `<li class="deshecho"><div class="txt">${esc(l.texto)}</div></li>`
+    : `<li class="${l.ok ? 'ok' : 'mal'}"><div class="txt"><span class="hora">${esc(l.hora)}</span>${enlazar(esc(l.texto))}</div>
+      ${l.op ? `<button type="button" class="mini sec" data-deshacer="${l.id}">Deshacer</button>` : ''}</li>`)).join('');
 }
 document.addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-deshacer]'); if (!b) return;
@@ -284,7 +357,7 @@ const PANTALLAS = {};
 function ir(p, ctx = {}, { historial = true, reemplazar = false } = {}) {
   if (p === 'codigo' && !ctx.codigo) E.volverA = null; // entrada desde el menú: no volver a otra pantalla
   const desde = E.pantalla;
-  E.pantalla = p; E.ctx = { ...ctx }; E.log = []; E.mult = 1;
+  E.pantalla = p; E.ctx = { ...ctx }; E.log = []; E.mult = 1; E.multEditando = false;
   if (reemplazar) history.replaceState({ p, ctx, desde: history.state && history.state.desde }, '', '#' + p);
   else if (historial) history.pushState({ p, ctx, desde }, '', '#' + p);
   window.scrollTo(0, 0); pintarCabecera();
@@ -384,6 +457,7 @@ PANTALLAS.inicio = async () => {
     <button class="grande claro" data-ir="historial"><b>Historial</b><span>Todo lo registrado; deshacer errores</span></button>
     <button class="grande claro" data-ir="conteo"><b>Conteo de inventario</b><span>Inventario inicial o corregir lo contado</span></button>
     <button class="grande claro" data-ir="codigo"><b>Registrar código</b><span>Etiqueta que la app no conoce</span></button>
+    <button class="grande claro" data-ir="config"><b>Configuración</b><span>Nombres de productos y tambores, avisos</span></button>
     <button class="grande claro" data-ir="ayuda"><b>Ayuda</b><span>Cómo funciona, la pistola, primer día</span></button>
   </div>`;
   const [pend, ops] = await Promise.all([
@@ -393,9 +467,9 @@ PANTALLAS.inicio = async () => {
   const n = $('#nPend'); if (n && pend.count) { n.textContent = pend.count; n.classList.remove('oculto'); }
   const pp = $('#primerPaso');
   if (pp && ops.count === 0) {
-    pp.innerHTML = `<div class="aviso-inicio"><b>Primer paso: crea el inventario.</b><br>
+    pp.innerHTML = enlazar(`<div class="aviso-inicio"><strong>Primer paso: crea el inventario.</strong><br>
       1) En <b>Tambores</b>, registra cada tambor con sus kilos. 2) En <b>Conteo de inventario</b>, escribe cuántos frascos y cajas hay.
-      <div class="fila-botones"><button class="mini" data-ir="tambores">Ir a Tambores</button><button class="mini sec" data-ir="conteo">Ir al Conteo</button></div></div>`;
+      <div class="fila-botones"><button class="mini" data-ir="tambores">Ir a Tambores</button><button class="mini sec" data-ir="conteo">Ir al Conteo</button></div></div>`);
   }
 };
 
@@ -404,48 +478,35 @@ PANTALLAS.inicio = async () => {
 PANTALLAS.envasar = () => {
   app.innerHTML = guia('envasar', [
     'Revisa que cada variedad tenga su tambor en uso (abajo). Si no, ábrelo en <b>Tambores</b>.',
-    'Pistolea <b>cada frasco</b> que envasas (+1 suelto), o <b>la caja</b> si envasas directo en caja (+1 caja de 12).',
-    'Cada lectura descuenta los kilos del tambor y suma al stock.',
-    '¿Te equivocaste? Toca <b>Deshacer</b> en esa línea.',
+    'Pistolea <b>cada frasco</b> que envasas, o <b>la caja</b> si envasas directo en caja de 12. Si son varios iguales, toca <b>×10</b> (u otra cantidad) y pistolea uno.',
+    'Lo que no tiene código (baldes): toca <b>Escribir a mano</b>, escribe "balde" y elige la variedad.',
+    'Cada lectura descuenta los kilos del tambor y suma al stock. ¿Te equivocaste? Toca <b>Deshacer</b> en esa línea.',
   ]) + `
-  ${htmlPistola('Pistolea el frasco o la caja', '<div class="usomini" id="usoMini"></div>' + htmlMultiplicador())}
+  ${htmlPistola('Pistolea el frasco o la caja', htmlMultiplicador())}
   <h3>Tambores en uso</h3>
-  <div class="usos" id="usos"></div>
-  <section class="tarjeta"><h3>Productos sin código</h3>
-    <p class="nota">Botones para lo que no se pistolea: la caja de 10 de 500 g y 1 kg (los frascos sueltos sí se pistolean) y los baldes.</p>
-    <div class="botonera" id="sinCodigo"></div>
-  </section>`;
+  <div class="usos" id="usos"></div>`;
   pintarUsos(); pintarMult();
-  $('#sinCodigo').innerHTML = [...E.productos.values()]
-    .filter((p) => p.activo && p.variedad && !p.caja_controlada)
-    .map((p) => `<button type="button" class="sec mini" data-envasar="${p.id}">${esc(p.nombre)} · ${p.uds_por_caja ? `+1 caja (${p.uds_por_caja} u)` : '+1 balde'}</button>`)
-    .join('');
-  $('#sinCodigo').querySelectorAll('[data-envasar]').forEach((b) => {
-    b.onclick = () => { const p = E.productos.get(b.dataset.envasar); encolar(() => envasar(p, p.uds_por_caja || 1, 0)); };
-  });
   activarPistola(async (cod) => {
-    const n = tomarMult();
     const { p, tipo } = buscarCodigo(cod);
+    const n = tomarMult();
     await envasar(p, tipo === 'caja' ? 0 : n, tipo === 'caja' ? n : 0);
-  });
+  }, async (p) => envasar(p, tomarMult(), 0)); // elegido por nombre (ej.: baldes): unidades
 };
+
+const CLASE_VARIEDAD = { ulmo: 'v-ulmo', bosque_nativo: 'v-bn', quillay: 'v-quillay' };
+// Mini barra con lo que queda del tambor, en el color de la variedad
+const miniBarra = (t) => `<span class="minibarra" title="Queda ${num((Number(t.kg_restantes) / Number(t.kg_iniciales)) * 100)} %"><i style="width:${Math.max(0, Math.min(100, (Number(t.kg_restantes) / Number(t.kg_iniciales)) * 100))}%"></i></span>`;
 
 function pintarUsos() {
   const s = $('#usos'); if (!s) return;
-  // Resumen junto a la pistola: de qué tambor se descuenta cada variedad
-  const mini = $('#usoMini');
-  if (mini) mini.innerHTML = 'Descuenta de: ' + Object.entries(VARIEDADES).map(([v, n]) => {
-    const t = tamborDe(v);
-    return t ? `<span>${n} <b>${esc(nombreTambor(t))}</b> (${num(t.kg_restantes)} kg)</span>` : `<span class="falta">${n}: sin tambor</span>`;
-  }).join(' · ');
   s.innerHTML = Object.entries(VARIEDADES).map(([v, nombre]) => {
     const abiertos = E.tambores.filter((t) => t.variedad === v);
     const t = tamborDe(v);
-    if (!t) return `<div class="uso falta"><b>${nombre}</b><span>Sin tambor abierto</span><button type="button" class="mini sec" data-ir="tambores">Abrir uno</button></div>`;
+    if (!t) return `<div class="uso falta ${CLASE_VARIEDAD[v]}"><b>${nombre}</b><span>Sin tambor abierto</span><button type="button" class="mini sec" data-ir="tambores">Abrir uno</button></div>`;
     const detalle = abiertos.length > 1
       ? `<select data-variedad="${v}" aria-label="Tambor de ${nombre}">${abiertos.map((a) => `<option value="${a.id}" ${a.id === t.id ? 'selected' : ''}>${esc(nombreTambor(a))} · quedan ${num(a.kg_restantes)} kg</option>`).join('')}</select>`
-      : `<span>${esc(nombreTambor(t))} · quedan <strong>${num(t.kg_restantes)} kg</strong></span>`;
-    return `<div class="uso"><b>${nombre}</b>${detalle}</div>`;
+      : `<span class="texto">${esc(nombreTambor(t))} · <span class="kgbarra">quedan <strong>${num(t.kg_restantes)} kg</strong>${miniBarra(t)}</span></span>`;
+    return `<div class="uso ${CLASE_VARIEDAD[v]}"><b>${nombre}</b>${detalle}${abiertos.length > 1 ? miniBarra(t) : ''}</div>`;
   }).join('');
   s.querySelectorAll('select[data-variedad]').forEach((x) => {
     x.onchange = () => { guardar('tambor_' + x.dataset.variedad, x.value); pintarUsos(); };
@@ -453,7 +514,7 @@ function pintarUsos() {
 }
 
 async function envasar(p, sueltas, cajas) {
-  if (!p.variedad) throw new Error('El pack se registra en "Armar pack"');
+  if (!p.variedad) throw new Error('El pack se arma en Encajar y packs.');
   const t = tamborDe(p.variedad);
   if (!t) throw new Error(`No hay tambor abierto de ${VARIEDADES[p.variedad]}: ábrelo en Tambores antes de envasar.`);
   const r = await rpc('op_envasar', { p_producto: p.id, p_tambor: t.id, p_sueltas: sueltas, p_cajas: cajas });
@@ -481,6 +542,10 @@ PANTALLAS.encajar = ({ modo } = {}) => {
     if (p.id === 'pack') { cambiarModoEncajar('pack'); return armarPack(); }
     if (tipo === 'caja') { cambiarModoEncajar('caja'); return encajar(p); }
     if (p.caja_controlada) throw new Error(`${p.nombre}: ese es el código del frasco. Pistolea el código de la caja.`);
+    throw new Error(`${p.nombre} no se encaja en la app: 500 g, 1 kg y baldes se cuentan solo por unidades.`);
+  }, async (p) => { // elegido por nombre
+    if (p.id === 'pack') { cambiarModoEncajar('pack'); return armarPack(); }
+    if (p.caja_controlada) { cambiarModoEncajar('caja'); return encajar(p); }
     throw new Error(`${p.nombre} no se encaja en la app: 500 g, 1 kg y baldes se cuentan solo por unidades.`);
   });
 };
@@ -561,7 +626,13 @@ PANTALLAS.preparar = async ({ id }) => {
   <div class="fila-botones"><button type="button" class="sec mini oculto" id="btnEditarPed">Editar pedido</button><button type="button" class="sec mini oculto" id="btnCadena">Corregir cadena</button>
     <button type="button" class="peligro mini" id="btnAnularPed">Anular este pedido</button></div>`;
   pintarMult();
-  activarPistola(async (cod) => { const n = tomarMult(); const { p, tipo } = buscarCodigo(cod); await preparar(id, p, tipo, false, n); });
+  activarPistola(async (cod) => { const { p, tipo } = buscarCodigo(cod); const n = tomarMult(); await preparar(id, p, tipo, false, n); },
+    async (p) => { // elegido por nombre: se usa la línea del pedido (unidades si las pide; si no, cajas)
+      const ls = (E.ctx.lineas || []).filter((l) => l.producto_id === p.id);
+      if (!ls.length) throw new Error(`${p.nombre} no está en este pedido`);
+      const l = ls.find((x) => x.unidad === 'unidad') || ls[0];
+      await preparar(id, p, l.unidad, false, tomarMult());
+    }, (p) => (E.ctx.lineas || []).some((l) => l.producto_id === p.id));
   $('#btnRetirar').onclick = () => encolar(() => retirar(id));
   $('#btnAnularPed').onclick = () => encolar(() => anularPedido(id));
   $('#btnEditarPed').onclick = () => ir('pedido', { id });
@@ -1177,10 +1248,52 @@ PANTALLAS.codigo = ({ codigo }) => {
   };
 };
 
+// ───────── Configuración ─────────
+
+function resetAvisos() {
+  try { Object.keys(localStorage).filter((k) => k.startsWith('no_mostrar_')).forEach((k) => localStorage.removeItem(k)); } catch { /* sin almacenamiento */ }
+  aviso('Listo: los avisos se vuelven a mostrar.', 'ok');
+}
+
+PANTALLAS.config = async () => {
+  app.innerHTML = guia('config', [
+    'Cambia el nombre de un producto o de un tambor y aprieta <b>Guardar</b> en esa fila.',
+    'El nombre nuevo se ve en toda la app, también en el historial. Los códigos de barra no cambian.',
+  ]) + `<section class="tarjeta"><h3>Productos</h3><div id="cfgProd" class="cfg"></div></section>
+  <section class="tarjeta"><h3>Tambores</h3><p class="nota">${enlazar('Abiertos y sin abrir. Para corregir los kilos, usa <b>Tambores</b>.')}</p><div id="cfgTamb" class="cfg"><p class="nota">Cargando…</p></div></section>
+  <section class="tarjeta"><h3>Avisos</h3><p class="nota">Si marcaste "No volver a mostrar" en un aviso (por ejemplo, al encajar) y quieres verlo de nuevo.</p>
+    <button type="button" class="sec" id="resetAvisos">Volver a mostrar los avisos</button></section>`;
+  $('#resetAvisos').onclick = resetAvisos;
+  $('#cfgProd').innerHTML = [...E.productos.values()].filter((p) => p.activo).map((p) => `<div class="cfg-fila">
+      <input value="${esc(p.nombre)}" data-prod="${p.id}" aria-label="Nombre de ${esc(p.nombre)}"><button type="button" class="mini" data-guardar-prod="${p.id}">Guardar</button></div>`).join('');
+  $('#cfgProd').querySelectorAll('[data-guardar-prod]').forEach((b) => {
+    b.onclick = () => encolar(async () => {
+      const id = b.dataset.guardarProd; const nombre = app.querySelector(`[data-prod="${id}"]`).value.trim();
+      if (nombre === E.productos.get(id).nombre) { aviso('Ese nombre no cambió.'); return; }
+      const r = await rpc('producto_renombrar', { p_id: id, p_nombre: nombre });
+      E.productos.get(id).nombre = r.nombre; pitido(true); aviso(`"${r.antes}" ahora se llama "${r.nombre}".`, 'ok');
+    });
+  });
+  const ts = await consulta(sb.from('v_tambores').select('*').in('estado', ['abierto', 'sin_abrir']).order('creado_en', { ascending: false }));
+  const c = $('#cfgTamb'); if (!c) return;
+  c.innerHTML = ts.length ? ts.map((t) => `<div class="cfg-fila ${CLASE_VARIEDAD[t.variedad]}"><span class="chico">${VARIEDADES[t.variedad]} · ${num(t.kg_iniciales)} kg</span>
+      <input value="${esc(t.identificacion || '')}" placeholder="Sin nombre (N.º ${t.id})" data-tamb="${t.id}" aria-label="Nombre del tambor ${t.id}"><button type="button" class="mini" data-guardar-tamb="${t.id}">Guardar</button></div>`).join('')
+    : '<p class="nota">No hay tambores abiertos ni sin abrir.</p>';
+  c.querySelectorAll('[data-guardar-tamb]').forEach((b) => {
+    b.onclick = () => encolar(async () => {
+      const t = ts.find((x) => x.id === Number(b.dataset.guardarTamb)); const nombre = app.querySelector(`[data-tamb="${t.id}"]`).value.trim();
+      if (!nombre) throw new Error('Escribe un nombre para el tambor.');
+      if (nombre === (t.identificacion || '')) { aviso('Ese nombre no cambió.'); return; }
+      await rpc('tambor_corregir', { p_id: t.id, p_kg: Number(t.kg_iniciales), p_identificacion: nombre });
+      t.identificacion = nombre; await cargarTambores(); pitido(true); aviso(`Tambor renombrado: ${nombre}.`, 'ok');
+    });
+  });
+};
+
 // ───────── Ayuda ─────────
 
 PANTALLAS.ayuda = () => {
-  app.innerHTML = `<section class="tarjeta"><h3>Cómo funciona</h3>
+  app.innerHTML = enlazar(`<section class="tarjeta"><h3>Cómo funciona</h3>
     <p>Cada cosa que pasa en la bodega se registra pistoleando: envasar, juntar cajas, preparar y retirar pedidos. Con eso la app calcula sola el stock y los kilos de cada tambor. Nada se borra: si alguien se equivoca, se deshace y queda anotado quién y cuándo.</p></section>
   <section class="tarjeta"><h3>Primer día</h3><ol>
     <li>En <b>Tambores</b>, registra cada tambor con sus kilos (si está empezado, los kilos que le quedan) y abre los que estás usando.</li>
@@ -1190,8 +1303,8 @@ PANTALLAS.ayuda = () => {
     <p>La pistola funciona como un teclado: lee el código, lo "escribe" y aprieta Enter. Por eso sirve con cualquier aparato:</p><ul>
     <li><b>Computador</b>: enchúfala por USB y listo.</li>
     <li><b>Celular o tablet Android</b>: si es inalámbrica, emparéjala en Ajustes → Bluetooth (en modo teclado, "HID"; el manual de la pistola trae el código para activarlo). Si es con cable, necesitas un adaptador USB-C a USB (OTG).</li>
-    <li><b>Probar</b>: abre Envasar. El recuadro "Esperando la pistola" debe estar marcado; pistolea un frasco y debe aparecer la línea con un pitido.</li></ul>
-    <p class="chico">El celular no abre su teclado en ese recuadro, para que no tape la pantalla. Si necesitas escribir un código, usa "Escribir a mano".</p></section>
+    <li>Para probar, abre <b>Envasar</b>. El recuadro "Esperando la pistola" debe estar marcado; pistolea un frasco y debe aparecer la línea con un pitido.</li></ul>
+    <p class="chico">El celular no abre su teclado en ese recuadro, para que no tape la pantalla. Para escribir un código o buscar un producto por nombre (por ejemplo, "balde"), usa "Escribir a mano": las opciones aparecen mientras escribes.</p></section>
   <section class="tarjeta"><h3>Si me equivoco</h3><ul>
     <li>Justo después: toca <b>Deshacer</b> en la línea.</li>
     <li>Más tarde: entra al <b>Historial</b> y toca <b>Deshacer</b> en ese registro.</li>
@@ -1203,15 +1316,10 @@ PANTALLAS.ayuda = () => {
     <li>Cuando sale de la bodega (lo retira el courier, Berni o el cliente), se aprieta <b>Marcar retirado</b> y recién ahí se descuenta del stock.</li></ol>
     <p class="chico">Las facturas de supermercado siguen el mismo camino, pero se cargan con <b>Subir factura</b>.</p></section>
   <section class="tarjeta"><h3>Varios iguales de una vez</h3>
-    <p>En Envasar y al preparar un pedido, toca <b>×10</b>, <b>×12</b> u <b>Otra</b> y pistolea un solo frasco o caja: esa lectura cuenta por esa cantidad. Después vuelve sola a ×1.</p>
-    <p class="chico">500 g, 1 kg y baldes no se encajan en la app: sus cajas no tienen código y se cuentan solo por unidades.</p></section>
-  <section class="tarjeta"><h3>Avisos</h3>
-    <p>Si marcaste "No volver a mostrar" en un aviso (por ejemplo, al encajar) y quieres verlo de nuevo:</p>
-    <button type="button" class="sec" id="resetAvisos">Volver a mostrar los avisos</button></section>`;
-  $('#resetAvisos').onclick = () => {
-    try { Object.keys(localStorage).filter((k) => k.startsWith('no_mostrar_')).forEach((k) => localStorage.removeItem(k)); } catch { /* sin almacenamiento */ }
-    aviso('Listo: los avisos se vuelven a mostrar.', 'ok');
-  };
+    <p>En <b>Envasar</b> y al preparar un pedido, toca ×10, ×12 u Otra (la cantidad se escribe ahí mismo) y pistolea un solo frasco o caja: esa lectura cuenta por esa cantidad. Después vuelve sola a ×1.</p>
+    <p class="chico">Los frascos de 500 g y 1 kg sí tienen código y se pistolean igual que los demás. Sus cajas de 10 no tienen código, así que no se encajan en la app: se cuentan por unidades.</p></section>
+  <section class="tarjeta"><h3>Nombres y avisos</h3>
+    <p>Para cambiar el nombre de un producto o de un tambor, o volver a mostrar los avisos que marcaste "No volver a mostrar", entra a <b>Configuración</b>.</p></section>`);
 };
 
 iniciar();

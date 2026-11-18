@@ -71,7 +71,30 @@ label.radio input { width: auto; min-height: 0; margin: 0; }
 .pistola .fila { display: flex; gap: 8px; }
 .pistola input { font-size: 20px; letter-spacing: 1px; margin: 0; }
 .pistola input:focus { background: #f2fbf6; }
-.pistola .estado { font-size: 13px; color: var(--suave); margin-top: 6px; }
+.pistola .estado { font-size: 13px; color: var(--alerta); margin-top: 6px; }
+.pistola .estado:empty { display: none; }
+.sugerencias { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.sugerencias:empty { display: none; }
+.sugerencias button { width: 100%; text-align: left; background: var(--petroleo-suave); color: var(--petroleo); min-height: 44px; font-weight: 700; }
+.sugerencias button:hover, .sugerencias li:first-child button { background: #d3e5e5; }
+a.atajo { color: var(--petroleo); font-weight: 700; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+.aviso a.atajo { color: inherit; }
+
+/* Variedades (colores de sus etiquetas, en sutil): Ulmo amarillo miel, Bosque Nativo azul petróleo, Quillay rojo */
+.v-ulmo { --var: #E6B22D; --var-suave: #fdf7e6; }
+.v-bn { --var: #004F55; --var-suave: #eef5f5; }
+.v-quillay { --var: #A6192E; --var-suave: #fbf1f2; }
+.uso.v-ulmo, .uso.v-bn, .uso.v-quillay, .cfg-fila.v-ulmo, .cfg-fila.v-bn, .cfg-fila.v-quillay { border-left: 4px solid var(--var); background: var(--var-suave); }
+.uso.falta { background: var(--mal-fondo); }
+.minibarra { flex: none; margin-left: 6px; display: inline-block; width: 44px; height: 6px; border-radius: 99px; background: rgba(13,65,65,.12); overflow: hidden; vertical-align: middle; }
+.minibarra i { display: block; height: 100%; background: var(--var, var(--miel)); }
+
+/* Configuración */
+.cfg { display: flex; flex-direction: column; gap: 8px; }
+.cfg-fila { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 10px; }
+.cfg-fila input { flex: 1; min-width: 160px; min-height: 42px; padding: 8px 10px; }
+.cfg-fila .chico { width: 100%; }
+#multOtra { width: 96px; min-height: 36px; padding: 4px 8px; }
 .usomini { font-size: 13px; color: var(--suave); margin: -2px 0 8px; line-height: 1.5; }
 .usomini b { color: var(--petroleo); }
 .usomini .falta { color: var(--mal); font-weight: 700; }
@@ -82,9 +105,9 @@ label.radio input { width: auto; min-height: 0; margin: 0; }
 .log li .hora { display: block; color: var(--suave); font-size: 12px; }
 .log li.ok { background: var(--ok-fondo); border-left-color: var(--ok); }
 .log li.mal { background: var(--mal-fondo); border-left-color: var(--mal); font-weight: 700; }
-.log li.deshecho { background: #f1f1f1; border-left-color: var(--gris); color: var(--suave); }
+.log li.deshecho { background: transparent; border-color: transparent; border-left-color: var(--gris); color: var(--suave); padding: 4px 12px; font-size: 13px; }
 .log li.deshecho .txt { text-decoration: line-through; }
-.log li:first-child:not(.vacio) { padding: 14px; font-size: 17px; }
+.log li:first-child:not(.vacio):not(.deshecho) { padding: 14px; font-size: 17px; }
 .log li.vacio { color: var(--suave); }
 #desc:empty { display: none; }
 #desc { margin: 0 0 12px; }
@@ -93,9 +116,10 @@ label.radio input { width: auto; min-height: 0; margin: 0; }
 .usos { display: flex; flex-direction: column; gap: 6px; margin: 0 0 4px; }
 .uso { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; background: #fff; border: 1px solid var(--borde); border-radius: 12px; padding: 8px 12px; }
 .uso b { font-family: Signika, system-ui, sans-serif; color: var(--petroleo); min-width: 104px; }
-.uso span { flex: 1; min-width: 150px; }
+.uso span.texto, .uso > span:not(.minibarra) { flex: 1; min-width: 150px; }
 .uso.falta { background: var(--mal-fondo); border-color: var(--mal); }
-.uso select { flex: 1; width: auto; min-width: 150px; min-height: 40px; padding: 4px 8px; }
+.uso select { flex: 1 1 120px; width: auto; min-width: 0; min-height: 40px; padding: 4px 8px; }
+.uso .kgbarra { white-space: nowrap; }
 .botonera { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* Listas, tablas y fichas */
