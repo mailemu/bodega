@@ -18,7 +18,8 @@ h2 { font-size: 22px; } h3 { font-size: 18px; margin-top: 0; }
 .quien { display: flex; gap: 10px; align-items: center; font-size: 14px; white-space: nowrap; }
 .enlace { background: none; border: 0; color: inherit; text-decoration: underline; font: inherit; padding: 0; min-height: 0; cursor: pointer; }
 
-main { max-width: 760px; margin: 0 auto; padding: 14px 16px 120px; }
+main { width: 100%; margin: 0; padding: 14px 16px 120px; }
+@media (min-width: 900px) { main { padding: 18px 28px 120px; } }
 button { font: inherit; border-radius: 12px; border: 0; background: var(--petroleo); color: #fff; padding: 12px 16px; min-height: 48px; cursor: pointer; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 button.sec { background: #fff; color: var(--petroleo); border: 1.5px solid var(--petroleo); }
@@ -88,6 +89,41 @@ a.atajo { color: var(--petroleo); font-weight: 700; text-decoration: underline; 
 .uso.falta { background: var(--mal-fondo); }
 .minibarra { flex: none; margin-left: 6px; display: inline-block; width: 44px; height: 6px; border-radius: 99px; background: rgba(13,65,65,.12); overflow: hidden; vertical-align: middle; }
 .minibarra i { display: block; height: 100%; background: var(--var, var(--miel)); }
+
+/* Pedido: retiro separado del armado */
+.separador-retiro { margin-top: 32px; padding-top: 18px; border-top: 2px dashed var(--borde); }
+#lblCajasNuevas { margin: 8px 0 0; color: var(--suave); font-size: 14px; }
+#lblCajasNuevas input { width: 18px; height: 18px; }
+.grupo.alerta { color: var(--alerta); background: var(--alerta-fondo); border: 1.5px solid var(--miel); border-radius: 10px; padding: 6px 10px; letter-spacing: .03em; }
+
+/* Stock */
+h4 { font: 600 15px Signika, system-ui, sans-serif; color: var(--suave); margin: 4px 0 6px; text-transform: uppercase; letter-spacing: .05em; }
+.dos-col { display: grid; grid-template-columns: 1fr; gap: 18px; }
+@media (min-width: 760px) { .dos-col { grid-template-columns: 1fr 1fr; gap: 28px; } }
+.tabla.compacta td { padding: 7px 4px; }
+.tabla tr.cero td { color: #9aa5a5; }
+.punto { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--var, var(--gris)); margin-right: 8px; vertical-align: middle; }
+.pedido-stock { display: flex; flex-direction: column; align-items: stretch; gap: 6px; width: 100%; text-align: left; background: #fff; color: var(--texto); border: 1.5px solid var(--borde); border-left: 5px solid var(--miel); padding: 10px 14px; }
+.pedido-stock.listo { border-left-color: var(--ok); }
+.pedido-stock .cabeza { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; align-items: center; }
+.pedido-stock b { font: 600 16px Signika, system-ui, sans-serif; color: var(--petroleo); }
+.lineas-ped { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 14px; color: var(--suave); }
+.etiqueta.pendiente { background: var(--alerta-fondo); color: var(--alerta); }
+
+/* Historial: distintivo por tipo de acción */
+#hist .ficha { margin: 0 0 10px; border-left-width: 5px; }
+.dia-hist { margin: 22px 0 10px; padding-bottom: 6px; border-bottom: 2px solid var(--borde); font: 600 17px Signika, system-ui, sans-serif; color: var(--petroleo); text-transform: capitalize; }
+#hist .dia-hist:first-child { margin-top: 6px; }
+.icono { margin-right: 8px; }
+.veces { display: inline-block; margin-left: 6px; padding: 0 8px; border-radius: 99px; background: var(--petroleo-suave); font: 700 13px Lato, system-ui, sans-serif; color: var(--petroleo); vertical-align: middle; }
+.t-envasar { border-left-color: var(--miel) !important; }
+.t-encajar { border-left-color: var(--petroleo) !important; }
+.t-armar_pack { border-left-color: #7a4f9a !important; }
+.t-desarmar { border-left-color: #c46a1b !important; }
+.t-preparar { border-left-color: #2f6fa8 !important; }
+.t-retiro { border-left-color: var(--ok) !important; }
+.t-ajuste { border-left-color: var(--gris) !important; }
+.t-anulacion { border-left-color: var(--mal) !important; }
 
 /* Historial por semana */
 .semana { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 6px; text-align: center; }
@@ -180,7 +216,7 @@ table.tabla { width: 100%; border-collapse: collapse; }
 .cuadra { color: var(--ok); font-weight: 700; } .no-cuadra { color: var(--mal); font-weight: 700; }
 
 /* Avisos flotantes */
-#avisos { position: fixed; left: 16px; right: 16px; bottom: 16px; z-index: 10; display: flex; flex-direction: column; gap: 8px; max-width: 728px; margin: 0 auto; pointer-events: none; }
+#avisos { position: fixed; left: 16px; right: 16px; bottom: 16px; z-index: 10; display: flex; flex-direction: column; gap: 8px; max-width: 640px; margin: 0 auto; pointer-events: none; }
 .aviso { pointer-events: auto; display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 12px; background: var(--petroleo); color: #fff; box-shadow: 0 4px 16px rgba(0,0,0,.18); }
 .aviso span { flex: 1; }
 .aviso button { min-height: 36px; padding: 4px 12px; background: #fff; color: var(--petroleo); }

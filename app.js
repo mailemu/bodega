@@ -614,9 +614,9 @@ PANTALLAS.pedidos = async () => {
       <span class="progreso">${p.completo ? 'Armado: listo para retirar' : `Armado ${prep} de ${total}`}</span></button>`;
   };
   const pend = data.filter((p) => !p.completo); const listos = data.filter((p) => p.completo);
-  l.innerHTML = `<div class="grupo">Pendientes (por armar) · ${pend.length}</div>
+  l.innerHTML = `<div class="grupo ${pend.length ? 'alerta' : ''}">${pend.length ? '⏰ ' : ''}Pendientes por armar · ${pend.length}</div>
     <div class="lista">${pend.map(ficha).join('') || '<p class="nota">No hay pedidos por armar.</p>'}</div>
-    <div class="grupo">Por retirar (armados y embalados) · ${listos.length}</div>
+    <div class="grupo">📦 Por retirar (armados y embalados) · ${listos.length}</div>
     <div class="lista">${listos.map(ficha).join('') || '<p class="nota">No hay pedidos esperando retiro.</p>'}</div>`;
 };
 
@@ -624,12 +624,14 @@ PANTALLAS.preparar = async ({ id }) => {
   app.innerHTML = `<h2 id="titPed">Cargando…</h2><p id="resPed" class="nota"></p>` + guia('preparar_v2', [
     'Para armar el pedido, pistolea cada caja o frasco a medida que lo juntas. La línea avanza y te avisa si sobra o no está en el pedido.',
     'Si son varios iguales (ej.: 10 frascos de 1 kg), toca <b>×10</b> y pistolea uno solo. Lo que no tiene código: <b>+1</b> o <b>Escribir a mano</b>.',
-    'Si lo armaste sin pistolear, toca <b>Marcar armado</b>. Con todo armado pasa a «Por retirar».',
+    'Si vas encajando frascos sueltos mientras armas, marca «Estoy armando cajas nuevas»: cada caja que pistoleas se encaja y se suma al pedido de una vez.',
+    'Si lo armaste sin pistolear, toca <b>Marcar armado sin pistolear</b>. Con todo armado pasa a «Por retirar».',
     'Cuando sale de la bodega, toca <b>Marcar retirado</b> (solo se puede con el pedido armado).',
-  ]) + `${htmlPistola('Pistolea cada frasco o caja de este pedido', htmlMultiplicador())}
-  <section class="tarjeta"><table class="tabla" id="lineas"></table></section>
-  <button type="button" class="grande sec oculto" id="btnArmado"><b>Marcar armado</b><span>Lo armé sin pistolear: completa lo que falta</span></button>
-  <button type="button" class="grande" id="btnRetirar"><b>Marcar retirado</b><span>Salió de la bodega: se descuenta del stock</span></button>
+  ]) + `${htmlPistola('Pistolea cada frasco o caja de este pedido', htmlMultiplicador()
+      + '<label class="check chico oculto" id="lblCajasNuevas"><input type="checkbox" id="cajasNuevas"> Estoy armando cajas nuevas con frascos sueltos: encajarlas al pistolearlas</label>')}
+  <section class="tarjeta"><table class="tabla" id="lineas"></table>
+    <div class="fila-botones"><button type="button" class="sec mini oculto" id="btnArmado">Marcar armado sin pistolear</button></div></section>
+  <div class="separador-retiro"><button type="button" class="grande ancho" id="btnRetirar"><b>Marcar retirado</b><span>Salió de la bodega: se descuenta del stock</span></button></div>
   <div class="fila-botones"><button type="button" class="sec mini oculto" id="btnEditarPed">Editar pedido</button><button type="button" class="sec mini oculto" id="btnCadena">Corregir cadena</button>
     <button type="button" class="peligro mini" id="btnAnularPed">Anular este pedido</button></div>`;
   pintarMult();
@@ -642,6 +644,7 @@ PANTALLAS.preparar = async ({ id }) => {
     }, (p) => (E.ctx.lineas || []).some((l) => l.producto_id === p.id));
   $('#btnRetirar').onclick = () => encolar(() => retirar(id));
   $('#btnArmado').onclick = () => encolar(() => marcarArmado(id));
+  $('#cajasNuevas').onchange = (ev) => { E.ctx.cajasNuevas = ev.target.checked; enfocarScan(); };
   $('#btnAnularPed').onclick = () => encolar(() => anularPedido(id));
   $('#btnEditarPed').onclick = () => ir('pedido', { id });
   $('#btnCadena').onclick = () => encolar(() => corregirCadena(id));
@@ -685,6 +688,8 @@ function pintarPedido() {
   $('#btnRetirar').disabled = !p.completo;
   $('#btnRetirar').querySelector('span').textContent = p.completo ? 'Salió de la bodega: se descuenta del stock' : 'Primero arma el pedido: pistolea todo o toca Marcar armado';
   $('#btnArmado').classList.toggle('oculto', !abierto || p.completo);
+  // La opción de cajas nuevas solo se muestra si el pedido lleva cajas o packs por armar
+  $('#lblCajasNuevas').classList.toggle('oculto', !abierto || !ls.some((l) => l.faltan > 0 && (l.unidad === 'caja' || l.producto_id === 'pack')));
   $('#btnAnularPed').classList.toggle('oculto', !abierto);
   $('#btnEditarPed').classList.toggle('oculto', !abierto || p.tipo !== 'pedido');
   $('#btnCadena').classList.toggle('oculto', !abierto || p.destino !== 'supermercado');
@@ -701,7 +706,8 @@ function pintarPedido() {
 async function preparar(id, p, unidad, desarmar = false, cantidad = 1) {
   let r;
   try {
-    r = await rpc('op_preparar', { p_pedido: id, p_producto: p.id, p_unidad: unidad, p_cantidad: cantidad, p_desarmar: desarmar });
+    const encajarAhora = !!E.ctx.cajasNuevas && (unidad === 'caja' || p.id === 'pack');
+    r = await rpc('op_preparar', { p_pedido: id, p_producto: p.id, p_unidad: unidad, p_cantidad: cantidad, p_desarmar: desarmar, p_encajar: encajarAhora });
   } catch (e) {
     if (e.codigo === 'FALTAN_SUELTAS' && !desarmar) {
       pitido(false);
@@ -974,43 +980,41 @@ function pintarFactura() {
 // ───────── Stock ─────────
 
 PANTALLAS.stock = async () => {
-  app.innerHTML = guia('stock_v2', [
-    '<b>En bodega</b>: lo que hay físicamente. De eso, una parte ya tiene dueño:',
-    '<b>En pedidos pendientes</b>: cargado en pedidos o facturas que todavía no se arman. <b>Por retirar</b>: pedidos ya armados y embalados, esperando que los retiren.',
-    '<b>Libre</b> = en bodega − pedidos pendientes − por retirar. Es lo que se puede vender.',
+  app.innerHTML = guia('stock_v3', [
+    '<b>Disponibles en bodega</b>: lo que se puede vender, separado en frascos sueltos y cajas. No incluye lo que ya está en pedidos.',
+    '<b>Stock por retirar</b>: lo que ya tiene dueño, pedido por pedido: pendientes por armar y armados esperando retiro. Toca un pedido para abrirlo.',
     'Si algo sale en rojo (negativo), hay que revisarlo con un <b>Conteo de inventario</b>.',
   ]) + `<div class="fila-botones"><button class="sec mini" id="refrescar">Actualizar</button><button class="sec mini" data-ir="conteo">Conteo de inventario</button></div>
   <div id="st"><p class="nota">Cargando…</p></div>`;
   $('#refrescar').onclick = () => ir('stock', {}, { historial: false });
-  const [s, t] = await Promise.all([
-    consulta(sb.from('v_stock').select('*').eq('activo', true).order('orden')),
+  const [s, t, peds, lineas] = await Promise.all([
+    consulta(sb.from('v_stock').select('*').eq('activo', true)),
     consulta(sb.from('v_tambores').select('variedad,kg_restantes,estado').in('estado', ['abierto', 'sin_abrir'])),
+    consulta(sb.from('v_pedidos').select('*').eq('estado', 'por_retirar').order('creado_en')),
+    consulta(sb.from('v_pedido_lineas').select('*').order('orden')),
   ]);
   const c = $('#st'); if (!c) return;
+  s.sort(ordenProductos);
   const kg = (v, est) => t.filter((x) => x.variedad === v && (!est || x.estado === est)).reduce((a, x) => a + Number(x.kg_restantes), 0);
-  const celda = (p, su, cj) => {
-    const neg = su < 0 || cj < 0;
-    return `<span class="${neg ? 'neg' : ''}">${textoStock(p, su, cj)}</span>`;
-  };
-  // 300 y 550 g: lo libre se muestra en frascos totales (si un pedido pide sueltas y solo hay cajas, se desarma una; no es un error)
-  const libre = (x) => {
-    if (!x.caja_controlada) return celda(x, x.disp_sueltas, 0);
-    const u = x.unidades_disponibles;
-    const detalle = x.disp_cajas >= 0 && x.disp_sueltas >= 0 && x.disp_cajas > 0 ? `<br><span class="chico">${textoStock(x, x.disp_sueltas, x.disp_cajas)}</span>` : '';
-    return `<span class="${u < 0 ? 'neg' : ''}">${plural(u, 'frasco', 'frascos')}</span>${detalle}`;
-  };
-  c.innerHTML = `<section class="tarjeta"><h3>Miel en tambores</h3>
-    <table class="tabla"><tr><th>Variedad</th><th class="num">Abiertos</th><th class="num">Sin abrir</th></tr>
-      ${Object.entries(VARIEDADES).map(([v, n]) => `<tr><td>${n}</td><td class="num">${num(kg(v, 'abierto'))} kg</td><td class="num">${num(kg(v, 'sin_abrir'))} kg</td></tr>`).join('')}
-    </table><p class="chico">Detalle por tambor en <a href="#" data-ir="tambores">Tambores</a>.</p></section>
-  <section class="tarjeta"><h3>Productos</h3>
-    <table class="tabla"><tr><th>Producto</th><th class="num">Libre</th></tr>
-    ${s.map((x) => {
-      const pendS = x.comp_sueltas - x.listo_sueltas; const pendC = x.comp_cajas - x.listo_cajas;
-      return `<tr><td><b>${esc(x.nombre)}</b><br><span class="chico">En bodega: ${celda(x, x.sueltas, x.cajas)}${(pendS || pendC) ? ` · En pedidos pendientes: ${textoStock(x, pendS, pendC)}` : ''}${(x.listo_sueltas || x.listo_cajas) ? ` · Por retirar: ${textoStock(x, x.listo_sueltas, x.listo_cajas)}` : ''}</span></td>
-      <td class="num disp">${libre(x)}</td></tr>`;
-    }).join('')}
-    </table></section>`;
+  const punto = (p) => (p.variedad ? `<i class="punto ${CLASE_VARIEDAD[p.variedad]}"></i>` : '<i class="punto"></i>');
+  const fila = (p, n, uno, varios) => `<tr class="${n ? '' : 'cero'}"><td>${punto(p)}${esc(p.nombre)}</td><td class="num ${n < 0 ? 'neg' : ''}">${plural(n, uno, varios)}</td></tr>`;
+  const sueltos = s.map((x) => { const [uno, varios] = x.caja_controlada ? ['frasco', 'frascos'] : unidadDe(x); return fila(x, x.disp_sueltas, uno, varios); }).join('');
+  const cajas = s.filter((x) => x.caja_controlada).map((x) => fila(x, x.disp_cajas, `caja de ${x.uds_por_caja}`, `cajas de ${x.uds_por_caja}`)).join('');
+  const lineasDe = (id) => lineas.filter((l) => l.pedido_id === id);
+  const fichaPedido = (p) => `<button type="button" class="pedido-stock ${p.completo ? 'listo' : ''}" data-ir="preparar" data-id="${p.id}">
+      <span class="cabeza"><b>${esc(p.etiqueta)}</b><span class="etiqueta ${p.completo ? 'abierto' : 'pendiente'}">${p.completo ? '📦 Armado' : '⏰ Por armar'}</span></span>
+      <span class="lineas-ped">${lineasDe(p.id).map((l) => `<span>${esc(l.producto)}: ${plural(l.cantidad, l.unidad === 'caja' ? 'caja' : 'unidad', l.unidad === 'caja' ? 'cajas' : 'unidades')}</span>`).join('')}</span></button>`;
+  c.innerHTML = `<section class="tarjeta"><h3>Disponibles en bodega</h3>
+    <div class="dos-col">
+      <div><h4>Frascos sueltos envasados</h4><table class="tabla compacta">${sueltos}</table></div>
+      <div><h4>Cajas</h4><table class="tabla compacta">${cajas}</table></div>
+    </div></section>
+  <section class="tarjeta"><h3>Stock por retirar</h3>
+    ${peds.length ? `<div class="lista">${peds.map(fichaPedido).join('')}</div>` : '<p class="nota">No hay pedidos pendientes ni por retirar.</p>'}</section>
+  <section class="tarjeta"><h3>Miel en tambores</h3>
+    <table class="tabla compacta"><tr><th>Variedad</th><th class="num">Abiertos</th><th class="num">Sin abrir</th></tr>
+      ${Object.entries(VARIEDADES).map(([v, n]) => `<tr><td><i class="punto ${CLASE_VARIEDAD[v]}"></i>${n}</td><td class="num">${num(kg(v, 'abierto'))} kg</td><td class="num">${num(kg(v, 'sin_abrir'))} kg</td></tr>`).join('')}
+    </table><p class="chico">${enlazar('Detalle de cada tambor en <b>Tambores</b>.')}</p></section>`;
 };
 
 // ───────── Tambores ─────────
@@ -1130,6 +1134,7 @@ const hhmm = (iso) => new Date(iso).toLocaleTimeString('es-CL', { hour: '2-digit
 function lunesDe(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
 const TIPOS_VERBO = { envasar: 'Envasado', encajar: 'Encajado', desarmar: 'Cajas desarmadas', armar_pack: 'Packs armados', preparar: 'Armado de pedido',
   retiro: 'Retiro', ajuste: 'Conteo o ajuste', anulacion: 'Deshecho' };
+const ICONOS = { envasar: '🫙', encajar: '📦', desarmar: '🔓', armar_pack: '🎁', preparar: '🧾', retiro: '🚚', ajuste: '📋', anulacion: '↩️' };
 
 PANTALLAS.historial = async () => {
   E.ctx.semana = E.ctx.semana || 0; // 0 = esta semana, 1 = la anterior…
@@ -1203,14 +1208,14 @@ async function pintarHistorial() {
   grupos.forEach((g, i) => {
     if (g.dia !== diaActual) {
       diaActual = g.dia; const d = new Date(g.ops[0].fecha);
-      html += `<div class="grupo">${g.dia === hoy ? 'Hoy' : g.dia === ayer ? 'Ayer' : DIAS[d.getDay()]} ${ddmm(d)}</div>`;
+      html += `<div class="dia-hist">${g.dia === hoy ? 'Hoy' : g.dia === ayer ? 'Ayer' : DIAS[d.getDay()]} ${ddmm(d)}</div>`;
     }
     const vivas = g.ops.filter((o) => !o.anulada);
     const resumen = resumenMovs(vivas.flatMap((o) => o.movs));
     const horas = g.ops.length > 1 ? `${hhmm(g.ops[g.ops.length - 1].fecha)}–${hhmm(g.ops[0].fecha)}` : hhmm(g.ops[0].fecha);
-    html += `<div class="ficha mov ${vivas.length ? '' : 'anulada'}">
+    html += `<div class="ficha mov t-${g.tipo} ${vivas.length ? '' : 'anulada'}">
       <button type="button" class="cabeza-grupo" data-grupo="${i}" aria-expanded="false">
-        <span class="cabeza"><b>${TIPOS_VERBO[g.tipo] || g.tipo}${g.ops.length > 1 ? ` · ${g.ops.length} veces` : ''}</b><span class="chico">${horas} · ${esc(quien(g.usuaria))}</span></span>
+        <span class="cabeza"><b><span class="icono" aria-hidden="true">${ICONOS[g.tipo] || '•'}</span>${TIPOS_VERBO[g.tipo] || g.tipo}${g.ops.length > 1 ? ` <span class="veces">× ${g.ops.length}</span>` : ''}</b><span class="chico">${horas} · ${esc(quien(g.usuaria))}</span></span>
         ${g.pedido ? `<span class="chico">${esc(g.pedido)}</span>` : ''}
         <span class="resumen">${esc(resumen || (vivas.length ? '' : 'Todo deshecho'))}</span>
         <span class="chico ver">Ver detalle ▾</span>
