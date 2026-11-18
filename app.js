@@ -19,12 +19,12 @@ const RUT_CADENA = {
   '76042014-K': { sugerida: 'lider', texto: 'RUT de Walmart: sugerencia Líder. Marca también el CD.' },
   '81201000-K': { sugerida: null, texto: 'RUT de Cencosud: Jumbo y Santa Isabel comparten RUT. Márcala tú.' },
 };
-const TITULOS = { inicio: 'Bodega', envasar: 'Envasar', encajar: 'Encajar', pack: 'Encajar', pedidos: 'Por retirar', preparar: 'Preparar pedido',
+const TITULOS = { inicio: 'Bodega', envasar: 'Envasar', encajar: 'Encajar', pack: 'Encajar', pedidos: 'Pedidos', preparar: 'Preparar pedido',
   factura: 'Subir factura', pedido: 'Nuevo pedido', stock: 'Stock', tambores: 'Tambores', historial: 'Historial', conteo: 'Conteo de inventario',
   codigo: 'Registrar código', ayuda: 'Ayuda', config: 'Configuración' };
 const PADRE = { preparar: 'pedidos', pedido: 'pedidos' }; // el resto vuelve al menú
 // Al editar un pedido, la pantalla de arriba es ese mismo pedido
-const padreDe = (p, ctx) => (p === 'pedido' && ctx && ctx.id ? 'preparar' : PADRE[p] || 'inicio');
+const padreDe = (p, ctx) => (p === 'pedido' && ctx && ctx.id ? 'preparar' : p === 'codigo' && !(ctx && ctx.codigo) ? 'config' : PADRE[p] || 'inicio');
 
 const E = {
   usuaria: null, nombre: '', nombres: new Map(), productos: new Map(), codigos: new Map(), tambores: [],
@@ -172,9 +172,9 @@ function guia(clave, pasos) {
 // Accesos directos: el nombre de una sección en un texto lleva a esa sección con un toque.
 // En textos con formato, "<b>Tambores</b>"; en avisos y lecturas, el nombre escrito tal cual.
 const ATAJOS = [['Conteo de inventario', 'conteo'], ['Registrar código', 'codigo'], ['Encajar y packs', 'encajar'], ['Nuevo pedido', 'pedido'],
-  ['Subir factura', 'factura'], ['Por retirar', 'pedidos'], ['Configuración', 'config'], ['Tambores', 'tambores'], ['Historial', 'historial'],
+  ['Subir factura', 'factura'], ['Pedidos', 'pedidos'], ['Configuración', 'config'], ['Tambores', 'tambores'], ['Historial', 'historial'],
   ['Envasar', 'envasar'], ['Encajar', 'encajar'], ['Armar pack', 'encajar'], ['Stock', 'stock'], ['Ayuda', 'ayuda']];
-const ATAJOS_TEXTO = ['Conteo de inventario', 'Registrar código', 'Encajar', 'Nuevo pedido', 'Subir factura', 'Por retirar', 'Configuración', 'Tambores', 'Historial'];
+const ATAJOS_TEXTO = ['Conteo de inventario', 'Registrar código', 'Encajar', 'Nuevo pedido', 'Subir factura', 'Pedidos', 'Configuración', 'Tambores', 'Historial'];
 function enlazar(html) {
   const link = (t) => { const a = ATAJOS.find(([n]) => n === t); return a ? `<a href="#" class="atajo" data-ir="${a[1]}">${t}</a>` : null; };
   let s = String(html).replace(/<b>([^<]+)<\/b>/g, (m, t) => link(t) || m);
@@ -216,6 +216,9 @@ function htmlPistola(texto, extra = '') {
 
 // Búsqueda de productos por nombre mientras se escribe ("balde", "ulmo 1kg", "bn 300"...), sin acentos ni mayúsculas
 const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/(\d)\s*(kg|g)\b/g, '$1$2');
+// Orden de las sugerencias: por variedad (Ulmo, Bosque Nativo, Quillay), luego de menor a mayor gramaje; el pack al final
+const ORDEN_VARIEDAD = { ulmo: 0, bosque_nativo: 1, quillay: 2 };
+const ordenProductos = (a, b) => ((ORDEN_VARIEDAD[a.variedad] ?? 9) - (ORDEN_VARIEDAD[b.variedad] ?? 9)) || (a.gramos - b.gramos);
 function buscarProductos(q, filtro = null) {
   const toks = norm(q).split(/\s+/).filter(Boolean);
   if (!toks.length) return [];
@@ -223,7 +226,7 @@ function buscarProductos(q, filtro = null) {
     const texto = `${norm(p.nombre)} ${p.variedad === 'bosque_nativo' ? 'bn' : ''} ${p.id === 'pack' ? 'pack variedades' : ''}`;
     const palabras = texto.split(/[\s,()×]+/);
     return toks.every((t) => palabras.some((w) => w.startsWith(t)) || (t.length >= 3 && texto.includes(t)));
-  }).slice(0, 8);
+  }).sort(ordenProductos).slice(0, 8);
 }
 
 // alLeer(código): lo que hace la pantalla con un código. alElegir(producto): con un producto elegido por nombre (opcional).
@@ -443,7 +446,7 @@ PANTALLAS.inicio = async () => {
   <div class="menu">
     <button class="grande" data-ir="envasar"><b>Envasar</b><span>Registra frascos y cajas que salen del tambor</span></button>
     <button class="grande" data-ir="encajar"><b>Encajar</b><span>Cajas de 12, cajas de 10 y Pack Variedades 3 × 300 g</span></button>
-    <button class="grande" data-ir="pedidos"><b>Por retirar <span class="contador oculto" id="nPend"></span></b><span>Prepara pedidos y facturas y márcalos retirados</span></button>
+    <button class="grande" data-ir="pedidos"><b>Pedidos <span class="contador oculto" id="nPend"></span></b><span>Pendientes y listos: prepararlos y marcarlos retirados</span></button>
   </div>
   <div class="grupo">Cargar</div>
   <div class="menu">
@@ -456,8 +459,7 @@ PANTALLAS.inicio = async () => {
     <button class="grande claro" data-ir="tambores"><b>Tambores</b><span>Kilos de cada tambor; abrir, cerrar, corregir</span></button>
     <button class="grande claro" data-ir="historial"><b>Historial</b><span>Todo lo registrado; deshacer errores</span></button>
     <button class="grande claro" data-ir="conteo"><b>Conteo de inventario</b><span>Inventario inicial o corregir lo contado</span></button>
-    <button class="grande claro" data-ir="codigo"><b>Registrar código</b><span>Etiqueta que la app no conoce</span></button>
-    <button class="grande claro" data-ir="config"><b>Configuración</b><span>Nombres de productos y tambores, avisos</span></button>
+    <button class="grande claro" data-ir="config"><b>Configuración</b><span>Nombres, códigos de barra y avisos</span></button>
     <button class="grande claro" data-ir="ayuda"><b>Ayuda</b><span>Cómo funciona, la pistola, primer día</span></button>
   </div>`;
   const [pend, ops] = await Promise.all([
@@ -587,11 +589,11 @@ async function armarPack() {
   avisosDe(r); registrar(true, `+1 pack (${plural(r.stock?.sueltas, 'pack armado', 'packs armados')}). Se restó 1 frasco de cada 300 g`, { op: r.operacion });
 }
 
-// ───────── Por retirar ─────────
+// ───────── Pedidos ─────────
 
 PANTALLAS.pedidos = async () => {
   app.innerHTML = guia('pedidos', [
-    'Aquí están los pedidos y facturas que esperan retiro. Su stock ya está reservado.',
+    'Aquí están los pedidos y facturas que esperan retiro. Su stock ya está apartado: en <b>Stock</b> aparece como «Por retirar».',
     'Toca uno para prepararlo pistoleando cada caja o frasco (opcional en facturas, pero ayuda a no equivocarse).',
     'Cuando lo retiren, aprieta <b>Marcar retirado</b>: recién ahí sale del stock.',
   ]) + `<div class="fila-botones"><button class="sec" data-ir="pedido">+ Nuevo pedido</button><button class="sec" data-ir="factura">+ Subir factura</button></div>
@@ -605,7 +607,7 @@ PANTALLAS.pedidos = async () => {
       <span>${resumenCant(p.cajas, p.unidades)}${p.oc ? ` · OC ${esc(p.oc)}` : ''}${p.nota ? ` · ${esc(p.nota)}` : ''}</span>
       <span class="chico">Cargado por ${esc(quien(p.creado_por))} el ${fecha(p.creado_en)}</span>
       <span class="progreso">${p.completo ? 'Listo para retirar' : `Pistoleado ${prep} de ${total}`}</span></button>`;
-  }).join('') : '<p class="nota">No hay pedidos ni facturas por retirar.</p>';
+  }).join('') : '<p class="nota">No hay pedidos ni facturas pendientes.</p>';
 };
 
 PANTALLAS.preparar = async ({ id }) => {
@@ -713,9 +715,9 @@ async function retirar(id) {
   const r = await rpc('op_retirar', { p_pedido: id });
   avisosDe(r); pitido(true);
   aviso(`${p.etiqueta}: retirado`, 'ok', { texto: 'Deshacer', fn: () => encolar(async () => {
-    if (!confirm(`¿Deshacer el retiro de ${p.etiqueta}? Vuelve a "Por retirar".`)) return;
+    if (!confirm(`¿Deshacer el retiro de ${p.etiqueta}? Vuelve a quedar pendiente en Pedidos.`)) return;
     await rpc('op_anular', { p_operacion: r.operacion, p_motivo: `Retiro deshecho al momento por ${E.nombre}` });
-    aviso('Retiro deshecho: el pedido vuelve a "Por retirar".', 'ok');
+    aviso('Retiro deshecho: el pedido vuelve a quedar pendiente en Pedidos.', 'ok');
     if (E.pantalla === 'pedidos') ir('pedidos', {}, { historial: false });
   }) });
   volverAPantalla('pedidos');
@@ -744,7 +746,7 @@ PANTALLAS.pedido = async ({ id } = {}) => {
   app.innerHTML = (id ? '<p class="aviso-inicio" id="npEditando">Cargando el pedido…</p>' : '') + guia('pedido', [
     'Elige a quién va el pedido.',
     'Escribe cuántas cajas o unidades lleva de cada producto (deja en blanco lo que no lleva).',
-    'Al crearlo, su stock queda reservado y aparece en <b>Por retirar</b> para que lo preparen.',
+    'Al crearlo, su stock queda apartado y aparece en <b>Pedidos</b> para que lo preparen.',
   ]) + `<section class="tarjeta"><h3>¿A quién va?</h3><div id="npDestino"></div></section>
   <section class="tarjeta"><h3>Productos</h3>
     <table class="tabla"><tr><th>Producto</th><th class="num">Cajas</th><th class="num">Unidades</th></tr>
@@ -755,7 +757,7 @@ PANTALLAS.pedido = async ({ id } = {}) => {
     <label style="margin-top:12px">Nota (opcional)<input id="npNota" placeholder="Ej.: N.º de venta de Mercado Libre"></label>
   </section>
   <p id="npResumen" class="nota"></p>
-  <button type="button" class="grande ancho" id="npCrear" disabled><b>Crear pedido</b><span>Queda en "Por retirar"</span></button>
+  <button type="button" class="grande ancho" id="npCrear" disabled><b>Crear pedido</b><span>Queda pendiente en Pedidos</span></button>
   <datalist id="clientes"></datalist>`;
   if (id) {
     // Cargar el pedido y dejarlo listo para editar
@@ -769,7 +771,7 @@ PANTALLAS.pedido = async ({ id } = {}) => {
     ls.forEach((l) => { const i = app.querySelector(`[data-np="${l.producto_id}"][data-unidad="${l.unidad}"]`); if (i) i.value = l.cantidad; });
     $('#npNota').value = p.nota || '';
     $('#npEditando').innerHTML = `Editando <b>${esc(p.etiqueta)}</b>. Cambia lo que necesites y aprieta Guardar cambios. No se puede bajar una cantidad por debajo de lo ya pistoleado.`;
-    $('#npCrear').innerHTML = '<b>Guardar cambios</b><span>El pedido sigue en "Por retirar"</span>';
+    $('#npCrear').innerHTML = '<b>Guardar cambios</b><span>El pedido sigue pendiente en Pedidos</span>';
     const t = $('#cab .titulo'); if (t) t.textContent = 'Editar pedido';
   }
   pintarDestino();
@@ -884,7 +886,7 @@ PANTALLAS.factura = () => {
   app.innerHTML = guia('factura', [
     'Descarga de Defontana el <b>XML</b> de la factura (no el PDF).',
     'Elígelo aquí abajo: la app lee sola el folio, la OC y las cajas.',
-    'Marca la cadena (y el CD si es Líder) y aprieta <b>Cargar factura</b>. Queda en <b>Por retirar</b>.',
+    'Marca la cadena (y el CD si es Líder) y aprieta <b>Cargar factura</b>. Queda en <b>Pedidos</b>.',
   ]) + `<section class="tarjeta"><label>Archivo XML de la factura
     <input type="file" id="archivoXml" accept=".xml,text/xml,application/xml"></label></section>
   <div id="fac"></div>`;
@@ -928,7 +930,7 @@ function pintarFactura() {
     <div class="opciones">${Object.entries(CADENAS).map(([k, n]) => `<button type="button" data-cadena="${k}" class="${f.cadena === k ? 'elegida' : ''} ${sug?.sugerida === k ? 'sugerida' : ''}">${n}</button>`).join('')}</div>
     ${f.cadena === 'lider' ? `<h3>CD de Líder</h3><div class="opciones">${Object.entries(CDS).map(([k, n]) => `<button type="button" data-cd="${k}" class="${f.cd === k ? 'elegida' : ''}">${n}</button>`).join('')}</div>` : ''}
   </section>
-  <button type="button" class="grande ancho" id="btnCargar" ${listo ? '' : 'disabled'}><b>Cargar factura</b><span>Queda por retirar; el stock se descuenta al marcarla retirada</span></button>
+  <button type="button" class="grande ancho" id="btnCargar" ${listo ? '' : 'disabled'}><b>Cargar factura</b><span>Queda pendiente en Pedidos; el stock se descuenta al marcarla retirada</span></button>
   <p class="error" id="errFac">${desconocidas.length ? 'Primero registra los códigos en rojo.' : !f.cadena ? 'Falta elegir la cadena.' : f.cadena === 'lider' && !f.cd ? 'Falta elegir el CD.' : ''}</p>`;
   E.volverA = { p: 'factura' };
   caja.querySelectorAll('[data-cadena]').forEach((b) => { b.onclick = () => { f.cadena = b.dataset.cadena; if (f.cadena !== 'lider') f.cd = null; pintarFactura(); }; });
@@ -943,7 +945,7 @@ function pintarFactura() {
         cadena: f.cadena, cd: f.cadena === 'lider' ? f.cd : null, xml: f.xml,
         lineas: f.lineas.map((l) => ({ codigo: l.codigo, nombre: l.nombre, cantidad: l.cantidad, precio: l.precio })),
       } });
-      pitido(true); aviso(`Factura ${f.folio} cargada: ${resumenCant(r.pedido.cajas, r.pedido.unidades)} por retirar. Si te equivocaste, ábrela en "Por retirar" y anúlala.`, 'ok');
+      pitido(true); aviso(`Factura ${f.folio} cargada: ${resumenCant(r.pedido.cajas, r.pedido.unidades)} pendientes. Si te equivocaste, ábrela en Pedidos y anúlala.`, 'ok');
       E.factura = null; E.volverA = null;
       ir('pedidos', {}, { reemplazar: true });
     } catch (e) { b.disabled = false; pitido(false); $('#errFac').textContent = mensaje(e); }
@@ -954,8 +956,8 @@ function pintarFactura() {
 
 PANTALLAS.stock = async () => {
   app.innerHTML = guia('stock', [
-    '<b>En bodega</b>: lo que hay físicamente. <b>Reservado</b>: lo que ya está en pedidos o facturas por retirar.',
-    '<b>Libre</b> = en bodega − reservado. Es lo que se puede vender.',
+    '<b>En bodega</b>: lo que hay físicamente. <b>Por retirar</b>: lo que está en pedidos o facturas pendientes (sigue en la bodega, pero ya tiene dueño).',
+    '<b>Libre</b> = en bodega − por retirar. Es lo que se puede vender.',
     'Si algo sale en rojo (negativo), hay que revisarlo con un <b>Conteo de inventario</b>.',
   ]) + `<div class="fila-botones"><button class="sec mini" id="refrescar">Actualizar</button><button class="sec mini" data-ir="conteo">Conteo de inventario</button></div>
   <div id="st"><p class="nota">Cargando…</p></div>`;
@@ -983,7 +985,7 @@ PANTALLAS.stock = async () => {
     </table><p class="chico">Detalle por tambor en <a href="#" data-ir="tambores">Tambores</a>.</p></section>
   <section class="tarjeta"><h3>Productos</h3>
     <table class="tabla"><tr><th>Producto</th><th class="num">Libre</th></tr>
-    ${s.map((x) => `<tr><td><b>${esc(x.nombre)}</b><br><span class="chico">En bodega: ${celda(x, x.sueltas, x.cajas)}${(x.comp_sueltas || x.comp_cajas) ? ` · Reservado: ${textoStock(x, x.comp_sueltas, x.comp_cajas)}` : ''}</span></td>
+    ${s.map((x) => `<tr><td><b>${esc(x.nombre)}</b><br><span class="chico">En bodega: ${celda(x, x.sueltas, x.cajas)}${(x.comp_sueltas || x.comp_cajas) ? ` · Por retirar: ${textoStock(x, x.comp_sueltas, x.comp_cajas)}` : ''}</span></td>
       <td class="num disp">${libre(x)}</td></tr>`).join('')}
     </table></section>`;
 };
@@ -1102,7 +1104,7 @@ PANTALLAS.historial = async () => {
   app.innerHTML = guia('historial', [
     'Aquí queda todo lo registrado, con quién y cuándo. Lo más nuevo arriba.',
     '<b>Deshacer</b> crea un movimiento contrario: nada se borra, queda la huella.',
-    'Para deshacer un retiro, el pedido vuelve a "Por retirar".',
+    'Si deshaces un retiro, el pedido vuelve a quedar pendiente en <b>Pedidos</b>.',
   ]) + `<div id="hist" class="lista"><p class="nota">Cargando…</p></div>
   <button type="button" class="sec ancho oculto" id="masHist">Ver más</button>`;
   $('#masHist').onclick = () => { E.ctx.limite += 40; pintarHistorial(); };
@@ -1255,6 +1257,8 @@ PANTALLAS.config = async () => {
     'El nombre nuevo se ve en toda la app, también en el historial. Los códigos de barra no cambian.',
   ]) + `<section class="tarjeta"><h3>Productos</h3><div id="cfgProd" class="cfg"></div></section>
   <section class="tarjeta"><h3>Tambores</h3><p class="nota">${enlazar('Abiertos y sin abrir. Para corregir los kilos, usa <b>Tambores</b>.')}</p><div id="cfgTamb" class="cfg"><p class="nota">Cargando…</p></div></section>
+  <section class="tarjeta"><h3>Códigos de barra</h3><p class="nota">Para asignar a un producto una etiqueta que la app no conoce (por ejemplo, una caja nueva o un código impreso para las cajas de 10).</p>
+    <button type="button" class="sec" data-ir="codigo">Registrar código</button></section>
   <section class="tarjeta"><h3>Avisos</h3><p class="nota">Si marcaste "No volver a mostrar" en un aviso (por ejemplo, al encajar) y quieres verlo de nuevo.</p>
     <button type="button" class="sec" id="resetAvisos">Volver a mostrar los avisos</button></section>`;
   $('#resetAvisos').onclick = resetAvisos;
@@ -1302,11 +1306,11 @@ PANTALLAS.ayuda = () => {
   <section class="tarjeta"><h3>Si me equivoco</h3><ul>
     <li>Justo después: toca <b>Deshacer</b> en la línea.</li>
     <li>Más tarde: entra al <b>Historial</b> y toca <b>Deshacer</b> en ese registro.</li>
-    <li>Un pedido mal cargado: ábrelo en <b>Por retirar</b> y toca <b>Editar pedido</b> (o <b>Anular</b>). Una factura con la cadena equivocada: <b>Corregir cadena</b>.</li>
+    <li>Un pedido mal cargado: ábrelo en <b>Pedidos</b> y toca <b>Editar pedido</b> (o <b>Anular</b>). Una factura con la cadena equivocada: <b>Corregir cadena</b>.</li>
     <li>Un tambor mal anotado: en <b>Tambores</b>, usa <b>Corregir</b> o <b>Anular</b>.</li></ul></section>
   <section class="tarjeta"><h3>Pedidos de Mercado Libre, web, clientes y encargos de Berni</h3><ol>
     <li>Berni (o quien lo reciba) lo carga en <b>Nuevo pedido</b>, eligiendo a quién va: Mercado Libre, Creado en Chile, Berni (ventas web y lo que ella pida) o un cliente.</li>
-    <li>Aparece en <b>Por retirar</b>, con el número de pendientes en el menú. Ahí la Pipa lo abre y lo prepara pistoleando cada frasco o caja; la línea avanza y avisa si sobra o falta.</li>
+    <li>Aparece en <b>Pedidos</b>, con el número de pendientes en el menú. Ahí la Pipa lo abre y lo prepara pistoleando cada frasco o caja; la línea avanza y avisa si sobra o falta.</li>
     <li>Cuando sale de la bodega (lo retira el courier, Berni o el cliente), se aprieta <b>Marcar retirado</b> y recién ahí se descuenta del stock.</li></ol>
     <p class="chico">Las facturas de supermercado siguen el mismo camino, pero se cargan con <b>Subir factura</b>.</p></section>
   <section class="tarjeta"><h3>Varios iguales de una vez</h3>
