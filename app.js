@@ -1114,29 +1114,42 @@ async function accionTambor(accion, id, lista) {
 
 // ───────── Historial (con Deshacer) ─────────
 
-// Por semana (lunes a domingo) y por día. Las acciones seguidas del mismo tipo, persona y pedido van en un solo registro;
-// al tocarlo se ve el detalle de cada una (y se deshace una por una).
+// Las acciones seguidas del mismo tipo, persona y pedido van en un solo registro; al tocarlo se ve cada una (y se deshace una por una).
 const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 const ddmm = (d) => d.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' });
 const hhmm = (iso) => new Date(iso).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
-function lunesDe(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
 const TIPOS_VERBO = { envasar: 'Envasado', encajar: 'Encajado', desarmar: 'Cajas desarmadas', armar_pack: 'Packs armados', preparar: 'Armado de pedido',
   retiro: 'Retiro', ajuste: 'Conteo o ajuste', anulacion: 'Deshecho' };
+const ORDEN_TIPOS = ['envasar', 'encajar', 'armar_pack', 'desarmar', 'preparar', 'retiro', 'ajuste'];
 const ICONOS = { envasar: '🫙', encajar: '📦', desarmar: '🔓', armar_pack: '🎁', preparar: '🧾', retiro: '🚚', ajuste: '📋', anulacion: '↩️' };
 
+// El historial abre en el calendario del mes: cada día muestra los kilos envasados y si hubo registros.
+// Abajo, los kilos envasados del mes (para las comisiones). Al tocar un día se ve su detalle.
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const claveDia = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
 PANTALLAS.historial = async () => {
-  E.ctx.semana = E.ctx.semana || 0; // 0 = esta semana, 1 = la anterior…
-  app.innerHTML = guia('historial_v2', [
-    'Todo lo registrado, por semana y por día. Las acciones seguidas van juntas: si se encajaron 9 cajas, aparece un solo registro. <b>Tócalo</b> para ver el detalle.',
-    'Usa las flechas para ver semanas anteriores.',
+  E.ctx.mes = E.ctx.mes || 0; // 0 = este mes, 1 = el anterior…
+  app.innerHTML = guia('historial_v3', [
+    'El calendario muestra el mes. Cada día tiene un circulito por actividad, con el color de la leyenda de abajo.',
+    '<b>Toca un día</b> para ver su detalle. Las acciones seguidas van juntas (si se encajaron 9 cajas, es un solo registro); tócalas para ver cada una.',
+    'Bajo el calendario están los kilos envasados del mes: por persona, por variedad y por producto.',
     '<b>Deshacer</b> está en el detalle, para cada acción. Crea un movimiento contrario: nada se borra.',
-  ]) + `<div class="semana"><button type="button" class="sec mini" id="semAnt">← Anterior</button><div><b id="semTit"></b><br><span class="chico" id="semRango"></span></div>
-    <button type="button" class="sec mini" id="semSig">Siguiente →</button></div>
-  <div id="hist"><p class="nota">Cargando…</p></div>`;
-  $('#semAnt').onclick = () => { E.ctx.semana += 1; pintarHistorial(); };
-  $('#semSig').onclick = () => { if (E.ctx.semana > 0) { E.ctx.semana -= 1; pintarHistorial(); } };
+  ]) + `<section class="tarjeta calendario">
+      <div class="mes-nav"><button type="button" class="sec mini" id="mesAnt" aria-label="Mes anterior">←</button><b id="mesTit"></b>
+        <button type="button" class="sec mini" id="mesSig" aria-label="Mes siguiente">→</button></div>
+      <div class="cal" id="cal"><p class="nota">Cargando…</p></div>
+    </section>
+    <div id="diaDet"></div>
+    <section class="tarjeta" id="resMes"></section>`;
+  $('#mesAnt').onclick = () => { E.ctx.mes += 1; E.ctx.diaSel = null; pintarHistorial(); };
+  $('#mesSig').onclick = () => { if (E.ctx.mes > 0) { E.ctx.mes -= 1; E.ctx.diaSel = null; pintarHistorial(); } };
   await pintarHistorial();
 };
+
+// Kilos envasados (nominales) de un conjunto de operaciones: solo envasados que no se deshicieron
+const kgEnvasado = (ops) => ops.filter((o) => o.tipo === 'envasar' && !o.anulada)
+  .reduce((a, o) => a + o.movs.reduce((b, m) => b - Number(m.d_kg || 0), 0), 0);
 
 // Resumen de movimientos: "Ulmo 300 g: +3 cajas, −36 sueltas · Tambor T-U3: −10,8 kg"
 function resumenMovs(movs) {
@@ -1159,13 +1172,12 @@ function resumenMovs(movs) {
 }
 
 async function pintarHistorial() {
-  const ini = lunesDe(new Date()); ini.setDate(ini.getDate() - 7 * E.ctx.semana);
-  const fin = new Date(ini); fin.setDate(fin.getDate() + 7);
-  const dom = new Date(fin); dom.setDate(dom.getDate() - 1);
-  $('#semTit').textContent = E.ctx.semana === 0 ? 'Esta semana' : E.ctx.semana === 1 ? 'Semana pasada' : `Semana del ${ddmm(ini)}`;
-  $('#semRango').textContent = `lunes ${ddmm(ini)} al domingo ${ddmm(dom)}`;
-  $('#semSig').disabled = E.ctx.semana === 0;
-  const c = $('#hist'); c.innerHTML = '<p class="nota">Cargando…</p>';
+  const hoyD = new Date();
+  const ini = new Date(hoyD.getFullYear(), hoyD.getMonth() - E.ctx.mes, 1);
+  const fin = new Date(ini.getFullYear(), ini.getMonth() + 1, 1);
+  $('#mesTit').textContent = `${MESES[ini.getMonth()]} ${ini.getFullYear()}`;
+  $('#mesSig').disabled = E.ctx.mes === 0;
+  $('#cal').innerHTML = '<p class="nota">Cargando…</p>';
   // Se trae por páginas (el servidor entrega hasta 1000 filas por consulta)
   let filas = [];
   for (let desde = 0; ; desde += 1000) {
@@ -1173,31 +1185,93 @@ async function pintarHistorial() {
       .order('fecha', { ascending: false }).order('movimiento').range(desde, desde + 999));
     filas = filas.concat(pag); if (pag.length < 1000) break;
   }
-  if (!$('#hist')) return;
-  // Operaciones con sus movimientos, de la más nueva a la más antigua
+  if (!$('#cal')) return;
+  // Operaciones con sus movimientos, de la más nueva a la más antigua; los "deshecho" se ven tachados en su acción original
   const ops = new Map();
   filas.forEach((f) => {
     if (!ops.has(f.operacion)) ops.set(f.operacion, { ...f, movs: [] });
     ops.get(f.operacion).movs.push(f);
   });
   const lista = [...ops.values()].filter((o) => o.tipo !== 'anulacion' || !ops.has(o.anula_a));
-  // Agrupar seguidas: mismo día, tipo, persona y pedido
+  const porDia = new Map();
+  lista.forEach((o) => { const k = claveDia(new Date(o.fecha)); if (!porDia.has(k)) porDia.set(k, []); porDia.get(k).push(o); });
+  E.ctx.porDia = porDia;
+  pintarCalendario(ini, porDia);
+  pintarResumenMes(ini, lista);
+  if (E.ctx.diaSel && porDia.has(E.ctx.diaSel)) pintarDia(E.ctx.diaSel); else { $('#diaDet').innerHTML = ''; }
+}
+
+function pintarCalendario(ini, porDia) {
+  const hoyK = claveDia(new Date());
+  const desfase = (ini.getDay() + 6) % 7; // lunes primero
+  const dias = new Date(ini.getFullYear(), ini.getMonth() + 1, 0).getDate();
+  let html = ['L', 'M', 'M', 'J', 'V', 'S', 'D'].map((d) => `<div class="cal-cab">${d}</div>`).join('');
+  for (let i = 0; i < desfase; i++) html += '<div class="cal-vacio"></div>';
+  for (let d = 1; d <= dias; d++) {
+    const k = claveDia(new Date(ini.getFullYear(), ini.getMonth(), d));
+    const ops = porDia.get(k) || [];
+    // Un circulito por cada tipo de actividad del día (sin contar lo deshecho), en el color de esa actividad
+    const tipos = ORDEN_TIPOS.filter((t) => ops.some((o) => o.tipo === t && !o.anulada));
+    html += `<button type="button" class="cal-dia ${ops.length ? 'con' : ''} ${k === hoyK ? 'hoy' : ''} ${k === E.ctx.diaSel ? 'sel' : ''}" data-dia="${k}" ${ops.length ? '' : 'disabled'}
+      aria-label="${d} de ${MESES[ini.getMonth()]}${tipos.length ? ': ' + tipos.map((t) => TIPOS_VERBO[t]).join(', ') : ''}">
+      <span class="n">${d}</span><span class="puntos">${tipos.map((t) => `<i class="pc pc-${t}"></i>`).join('')}</span></button>`;
+  }
+  // Leyenda solo con las actividades que aparecen en el mes
+  const enMes = ORDEN_TIPOS.filter((t) => [...porDia.values()].some((ops) => ops.some((o) => o.tipo === t && !o.anulada)));
+  html += `<div class="cal-leyenda">${enMes.map((t) => `<span><i class="pc pc-${t}"></i>${TIPOS_VERBO[t]}</span>`).join('')}</div>`;
+  $('#cal').innerHTML = html;
+  $('#cal').querySelectorAll('[data-dia]').forEach((b) => {
+    b.onclick = () => {
+      E.ctx.diaSel = b.dataset.dia;
+      $('#cal').querySelectorAll('.cal-dia').forEach((x) => x.classList.toggle('sel', x === b));
+      pintarDia(b.dataset.dia);
+      $('#diaDet').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+  });
+}
+
+// Kilos envasados del mes: total, por persona (comisiones), por variedad y por producto
+function pintarResumenMes(ini, lista) {
+  const env = lista.filter((o) => o.tipo === 'envasar' && !o.anulada);
+  const total = kgEnvasado(env);
+  const porPersona = new Map(); const porVariedad = new Map(); const porProducto = new Map();
+  env.forEach((o) => o.movs.forEach((m) => {
+    const kg = -Number(m.d_kg || 0); const p = E.productos.get(m.producto_id) || {};
+    porPersona.set(o.usuaria, (porPersona.get(o.usuaria) || 0) + kg);
+    if (p.variedad) porVariedad.set(p.variedad, (porVariedad.get(p.variedad) || 0) + kg);
+    const a = porProducto.get(m.producto_id) || { p, u: 0, kg: 0 };
+    a.u += m.d_sueltas + m.d_cajas * (p.uds_por_caja || 0); a.kg += kg; porProducto.set(m.producto_id, a);
+  }));
+  const diasEnv = new Set(env.map((o) => claveDia(new Date(o.fecha)))).size;
+  const filas = (mapa, etiqueta) => [...mapa.entries()].sort((a, b) => b[1] - a[1]).map(([k, kg]) => `<tr><td>${etiqueta(k)}</td><td class="num"><b>${num(kg)} kg</b></td></tr>`).join('');
+  $('#resMes').innerHTML = `<h3>🫙 Kilos envasados en ${MESES[ini.getMonth()]}</h3>
+    ${total > 0 ? `<p class="kg-total">${num(total)} kg <span class="chico">en ${plural(diasEnv, 'día', 'días')}</span></p>
+    <div class="dos-col">
+      <div><h4>Por persona</h4><table class="tabla compacta">${filas(porPersona, (u) => esc(quien(u)))}</table>
+        <h4 style="margin-top:14px">Por variedad</h4><table class="tabla compacta">${filas(porVariedad, (v) => `<i class="punto ${CLASE_VARIEDAD[v]}"></i>${VARIEDADES[v]}`)}</table></div>
+      <div><h4>Por producto</h4><table class="tabla compacta">${[...porProducto.values()].sort((a, b) => ordenProductos(a.p, b.p))
+        .map((a) => `<tr><td>${a.p.variedad ? `<i class="punto ${CLASE_VARIEDAD[a.p.variedad]}"></i>` : ''}${esc(a.p.nombre || '')}</td><td class="num">${plural(a.u, a.p.uds_por_caja ? 'frasco' : 'balde', a.p.uds_por_caja ? 'frascos' : 'baldes')}</td><td class="num">${num(a.kg)} kg</td></tr>`).join('')}</table></div>
+    </div>
+    <p class="chico">Kilos nominales (gramos de cada formato × unidades), sin contar lo deshecho.</p>`
+    : '<p class="nota">No hubo envasado este mes.</p>'}`;
+}
+
+// Detalle de un día: acciones seguidas del mismo tipo, persona y pedido en un solo registro
+function pintarDia(k) {
+  const lista = (E.ctx.porDia && E.ctx.porDia.get(k)) || [];
   const grupos = [];
   lista.forEach((o) => {
-    const dia = new Date(o.fecha).toDateString();
     const g = grupos[grupos.length - 1];
-    if (g && g.dia === dia && g.tipo === o.tipo && g.usuaria === o.usuaria && g.pedido_id === o.pedido_id) g.ops.push(o);
-    else grupos.push({ dia, tipo: o.tipo, usuaria: o.usuaria, pedido_id: o.pedido_id, pedido: o.pedido, ops: [o] });
+    if (g && g.tipo === o.tipo && g.usuaria === o.usuaria && g.pedido_id === o.pedido_id) g.ops.push(o);
+    else grupos.push({ tipo: o.tipo, usuaria: o.usuaria, pedido_id: o.pedido_id, pedido: o.pedido, ops: [o] });
   });
   E.ctx.grupos = grupos;
-  if (!grupos.length) { c.innerHTML = `<p class="nota">No hay registros ${E.ctx.semana === 0 ? 'esta semana' : 'en esa semana'}.</p>`; return; }
-  const hoy = new Date().toDateString(); const ayer = new Date(Date.now() - 864e5).toDateString();
-  let html = ''; let diaActual = null;
+  const [a, m, d] = k.split('-').map(Number); const fechaD = new Date(a, m - 1, d);
+  const hoy = claveDia(new Date()); const ayer = claveDia(new Date(Date.now() - 864e5));
+  const kg = kgEnvasado(lista);
+  let html = `<div class="dia-hist">${k === hoy ? 'Hoy' : k === ayer ? 'Ayer' : DIAS[fechaD.getDay()]} ${ddmm(fechaD)}${kg > 0 ? ` <span class="chico">· 🫙 ${num(kg)} kg envasados</span>` : ''}</div>`;
+  if (!grupos.length) html += '<p class="nota">Sin registros este día.</p>';
   grupos.forEach((g, i) => {
-    if (g.dia !== diaActual) {
-      diaActual = g.dia; const d = new Date(g.ops[0].fecha);
-      html += `<div class="dia-hist">${g.dia === hoy ? 'Hoy' : g.dia === ayer ? 'Ayer' : DIAS[d.getDay()]} ${ddmm(d)}</div>`;
-    }
     const vivas = g.ops.filter((o) => !o.anulada);
     const resumen = resumenMovs(vivas.flatMap((o) => o.movs));
     const horas = g.ops.length > 1 ? `${hhmm(g.ops[g.ops.length - 1].fecha)}–${hhmm(g.ops[0].fecha)}` : hhmm(g.ops[0].fecha);
@@ -1210,7 +1284,8 @@ async function pintarHistorial() {
       </button>
       <div class="detalle oculto" id="det${i}"></div></div>`;
   });
-  c.innerHTML = html;
+  const c = $('#diaDet'); if (!c) return;
+  c.innerHTML = `<section class="dia-detalle">${html}</section>`;
   c.querySelectorAll('[data-grupo]').forEach((b) => { b.onclick = () => abrirGrupo(Number(b.dataset.grupo), b); });
 }
 
