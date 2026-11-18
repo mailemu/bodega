@@ -19,7 +19,7 @@ const RUT_CADENA = {
   '76042014-K': { sugerida: 'lider', texto: 'RUT de Walmart: sugerencia Líder. Marca también el CD.' },
   '81201000-K': { sugerida: null, texto: 'RUT de Cencosud: Jumbo y Santa Isabel comparten RUT. Márcala tú.' },
 };
-const TITULOS = { inicio: 'Bodega', envasar: 'Envasar', encajar: 'Encajar y packs', pack: 'Encajar y packs', pedidos: 'Por retirar', preparar: 'Preparar pedido',
+const TITULOS = { inicio: 'Bodega', envasar: 'Envasar', encajar: 'Encajar', pack: 'Encajar', pedidos: 'Por retirar', preparar: 'Preparar pedido',
   factura: 'Subir factura', pedido: 'Nuevo pedido', stock: 'Stock', tambores: 'Tambores', historial: 'Historial', conteo: 'Conteo de inventario',
   codigo: 'Registrar código', ayuda: 'Ayuda', config: 'Configuración' };
 const PADRE = { preparar: 'pedidos', pedido: 'pedidos' }; // el resto vuelve al menú
@@ -28,7 +28,7 @@ const padreDe = (p, ctx) => (p === 'pedido' && ctx && ctx.id ? 'preparar' : PADR
 
 const E = {
   usuaria: null, nombre: '', nombres: new Map(), productos: new Map(), codigos: new Map(), tambores: [],
-  log: [], logId: 0, pantalla: null, ctx: {}, volverA: null, factura: null, mult: 1,
+  log: [], logId: 0, pantalla: null, ctx: {}, volverA: null, factura: null, mult: 1, avisosVistos: new Set(), ultimoEncajable: null,
 };
 
 const app = document.getElementById('app');
@@ -174,7 +174,7 @@ function guia(clave, pasos) {
 const ATAJOS = [['Conteo de inventario', 'conteo'], ['Registrar código', 'codigo'], ['Encajar y packs', 'encajar'], ['Nuevo pedido', 'pedido'],
   ['Subir factura', 'factura'], ['Por retirar', 'pedidos'], ['Configuración', 'config'], ['Tambores', 'tambores'], ['Historial', 'historial'],
   ['Envasar', 'envasar'], ['Encajar', 'encajar'], ['Armar pack', 'encajar'], ['Stock', 'stock'], ['Ayuda', 'ayuda']];
-const ATAJOS_TEXTO = ['Conteo de inventario', 'Registrar código', 'Encajar y packs', 'Nuevo pedido', 'Subir factura', 'Por retirar', 'Configuración', 'Tambores', 'Historial'];
+const ATAJOS_TEXTO = ['Conteo de inventario', 'Registrar código', 'Encajar', 'Nuevo pedido', 'Subir factura', 'Por retirar', 'Configuración', 'Tambores', 'Historial'];
 function enlazar(html) {
   const link = (t) => { const a = ATAJOS.find(([n]) => n === t); return a ? `<a href="#" class="atajo" data-ir="${a[1]}">${t}</a>` : null; };
   let s = String(html).replace(/<b>([^<]+)<\/b>/g, (m, t) => link(t) || m);
@@ -357,7 +357,7 @@ const PANTALLAS = {};
 function ir(p, ctx = {}, { historial = true, reemplazar = false } = {}) {
   if (p === 'codigo' && !ctx.codigo) E.volverA = null; // entrada desde el menú: no volver a otra pantalla
   const desde = E.pantalla;
-  E.pantalla = p; E.ctx = { ...ctx }; E.log = []; E.mult = 1; E.multEditando = false;
+  E.pantalla = p; E.ctx = { ...ctx }; E.log = []; E.mult = 1; E.multEditando = false; E.avisosVistos = new Set();
   if (reemplazar) history.replaceState({ p, ctx, desde: history.state && history.state.desde }, '', '#' + p);
   else if (historial) history.pushState({ p, ctx, desde }, '', '#' + p);
   window.scrollTo(0, 0); pintarCabecera();
@@ -442,7 +442,7 @@ PANTALLAS.inicio = async () => {
   <div class="grupo">En la bodega</div>
   <div class="menu">
     <button class="grande" data-ir="envasar"><b>Envasar</b><span>Registra frascos y cajas que salen del tambor</span></button>
-    <button class="grande" data-ir="encajar"><b>Encajar y packs</b><span>Cajas de 12 frascos o Pack Variedades 3 × 300 g</span></button>
+    <button class="grande" data-ir="encajar"><b>Encajar</b><span>Cajas de 12, cajas de 10 y Pack Variedades 3 × 300 g</span></button>
     <button class="grande" data-ir="pedidos"><b>Por retirar <span class="contador oculto" id="nPend"></span></b><span>Prepara pedidos y facturas y márcalos retirados</span></button>
   </div>
   <div class="grupo">Cargar</div>
@@ -502,91 +502,85 @@ function pintarUsos() {
   s.innerHTML = Object.entries(VARIEDADES).map(([v, nombre]) => {
     const abiertos = E.tambores.filter((t) => t.variedad === v);
     const t = tamborDe(v);
-    if (!t) return `<div class="uso falta ${CLASE_VARIEDAD[v]}"><b>${nombre}</b><span>Sin tambor abierto</span><button type="button" class="mini sec" data-ir="tambores">Abrir uno</button></div>`;
-    const detalle = abiertos.length > 1
-      ? `<select data-variedad="${v}" aria-label="Tambor de ${nombre}">${abiertos.map((a) => `<option value="${a.id}" ${a.id === t.id ? 'selected' : ''}>${esc(nombreTambor(a))} · quedan ${num(a.kg_restantes)} kg</option>`).join('')}</select>`
-      : `<span class="texto">${esc(nombreTambor(t))} · <span class="kgbarra">quedan <strong>${num(t.kg_restantes)} kg</strong>${miniBarra(t)}</span></span>`;
-    return `<div class="uso ${CLASE_VARIEDAD[v]}"><b>${nombre}</b>${detalle}${abiertos.length > 1 ? miniBarra(t) : ''}</div>`;
+    if (!t) return `<div class="uso falta ${CLASE_VARIEDAD[v]}"><b>${nombre}</b><span class="texto">Sin tambor abierto</span><button type="button" class="cambiar" data-ir="tambores">abrir uno</button></div>`;
+    // Misma fila para todos (las barras quedan alineadas); si hay más de un tambor abierto, "cambiar" abre la lista
+    return `<div class="uso ${CLASE_VARIEDAD[v]}"><b>${nombre}</b><span class="texto">${esc(nombreTambor(t))} · <span class="kgbarra">quedan <strong>${num(t.kg_restantes)} kg</strong>${miniBarra(t)}</span></span>
+      ${abiertos.length > 1 ? `<button type="button" class="cambiar" data-cambiar="${v}">cambiar</button>` : ''}</div>`;
   }).join('');
-  s.querySelectorAll('select[data-variedad]').forEach((x) => {
-    x.onchange = () => { guardar('tambor_' + x.dataset.variedad, x.value); pintarUsos(); };
-  });
+  s.querySelectorAll('[data-cambiar]').forEach((b) => { b.onclick = () => elegirTambor(b.dataset.cambiar); });
+}
+
+// Elegir de qué tambor abierto se envasa una variedad (cuando hay más de uno)
+async function elegirTambor(v) {
+  const abiertos = E.tambores.filter((t) => t.variedad === v); const actual = tamborDe(v);
+  const r = await dialogo({ titulo: `Envasar ${VARIEDADES[v]} desde…`, aceptar: 'Usar este',
+    html: abiertos.map((a) => `<label class="radio"><input type="radio" name="dlgTambor" value="${a.id}" ${a.id === actual.id ? 'checked' : ''}> ${esc(nombreTambor(a))} · quedan ${num(a.kg_restantes)} kg</label>`).join(''),
+    alAceptar: (f) => f.querySelector('input[name="dlgTambor"]:checked')?.value });
+  if (r.ok && r.valor) { guardar('tambor_' + v, r.valor); pintarUsos(); }
+  enfocarScan();
 }
 
 async function envasar(p, sueltas, cajas) {
-  if (!p.variedad) throw new Error('El pack se arma en Encajar y packs.');
+  if (!p.variedad) throw new Error('El pack se arma en Encajar.');
   const t = tamborDe(p.variedad);
   if (!t) throw new Error(`No hay tambor abierto de ${VARIEDADES[p.variedad]}: ábrelo en Tambores antes de envasar.`);
   const r = await rpc('op_envasar', { p_producto: p.id, p_tambor: t.id, p_sueltas: sueltas, p_cajas: cajas });
   const i = E.tambores.findIndex((x) => x.id === r.tambor.id); if (i >= 0) E.tambores[i] = r.tambor;
   pintarUsos(); avisosDe(r);
-  const que = cajas ? `+${plural(cajas, 'caja', 'cajas')} de 12` : !p.uds_por_caja ? `+${plural(sueltas, 'balde', 'baldes')}` : sueltas === 1 ? '+1 frasco' : `+${sueltas} frascos`;
+  const que = cajas ? `+${plural(cajas, 'caja', 'cajas')} de ${p.uds_por_caja}` : !p.uds_por_caja ? `+${plural(sueltas, 'balde', 'baldes')}` : sueltas === 1 ? '+1 frasco' : `+${sueltas} frascos`;
   registrar(true, `${p.nombre} ${que}. Stock: ${textoStock(p, r.stock.sueltas, r.stock.cajas)}. Tambor ${nombreTambor(r.tambor)}: quedan ${num(r.tambor.kg_restantes)} kg`,
     { op: r.operacion, alDeshacer: async () => { await cargarTambores(); pintarUsos(); } });
 }
 
-// ───────── Encajar y armar pack ─────────
+// ───────── Encajar (cajas de 12, cajas de 10 y packs) ─────────
 
-// Una sola pantalla con dos opciones: cajas de 12 o packs. La pistola reconoce sola cuál es (caja o cajita del pack).
-PANTALLAS.encajar = ({ modo } = {}) => {
-  E.ctx.modo = modo || leer('encajar_modo') || 'caja';
-  app.innerHTML = `<div class="opciones segmento" id="segEnc">
-      <button type="button" data-modo="caja">Cajas de 12</button><button type="button" data-modo="pack">Packs 3 × 300 g</button></div>
-    <div id="guiaEnc"></div>
-    ${htmlPistola('Pistolea la caja o la cajita del pack')}
-    <section class="tarjeta" id="manualEnc"></section>`;
-  $('#segEnc').querySelectorAll('[data-modo]').forEach((b) => { b.onclick = () => cambiarModoEncajar(b.dataset.modo); });
-  pintarModoEncajar();
+// Se pistolea la caja de 12 o la cajita del pack; las cajas de 10 (500 g y 1 kg) y cualquier caja sin etiqueta van en "Encajar sin pistolear".
+PANTALLAS.encajar = () => {
+  const encajables = [...E.productos.values()].filter((p) => p.activo && (p.caja_controlada || p.id === 'pack'));
+  app.innerHTML = guia('encajar_v2', [
+    '<b>Cajas de 12</b> (300 y 550 g): junta 12 frascos sueltos del mismo producto en su caja y pistolea el <b>código de la caja</b>, no el del frasco.',
+    '<b>Packs 3 × 300 g</b>: arma la cajita con 1 frasco de Ulmo, 1 de Bosque Nativo y 1 de Quillay de 300 g y pistolea el <b>código de la cajita</b>.',
+    '<b>Cajas de 10</b> (500 g y 1 kg) y cualquier caja sin código o sin etiqueta: usa el recuadro de abajo, <b>Encajar sin pistolear</b>. Elige el producto y toca <b>Añadir caja</b> una vez por cada caja.',
+    'También puedes tocar <b>Escribir a mano</b> y escribir el código o el nombre del producto (ej.: "ulmo 1kg", "pack"): las opciones aparecen mientras escribes.',
+    'Cada caja suma 1 caja al stock y descuenta sus frascos sueltos (12 o 10; el pack, 1 de cada variedad). ¿Te equivocaste? Toca <b>Deshacer</b>.',
+  ]) + htmlPistola('Pistolea la caja o la cajita del pack') + `
+  <section class="tarjeta"><h3>Encajar sin pistolear</h3><p class="nota">Para cajas sin código o etiqueta.</p>
+    <div class="fila-botones"><select id="encProd" aria-label="Producto a encajar">${encajables.map((p) => `<option value="${p.id}" ${p.id === E.ultimoEncajable ? 'selected' : ''}>${esc(p.nombre)}${p.id === 'pack' ? '' : ` · caja de ${p.uds_por_caja}`}</option>`).join('')}</select>
+    <button type="button" id="encManual">Añadir caja</button></div></section>`;
+  $('#encProd').onchange = () => { E.ultimoEncajable = $('#encProd').value; };
+  // Cada toque agrega una caja (se graban en orden, aunque se toque rápido)
+  $('#encManual').onclick = () => { const p = E.productos.get($('#encProd').value); E.ultimoEncajable = p.id; encolar(() => (p.id === 'pack' ? armarPack() : encajar(p))); };
+  const porProducto = async (p) => {
+    if (p.id === 'pack') return armarPack();
+    if (p.caja_controlada) return encajar(p);
+    throw new Error(`${p.nombre} no se encaja.`);
+  };
   activarPistola(async (cod) => {
     const { p, tipo } = buscarCodigo(cod);
-    if (p.id === 'pack') { cambiarModoEncajar('pack'); return armarPack(); }
-    if (tipo === 'caja') { cambiarModoEncajar('caja'); return encajar(p); }
-    if (p.caja_controlada) throw new Error(`${p.nombre}: ese es el código del frasco. Pistolea el código de la caja.`);
-    throw new Error(`${p.nombre} no se encaja en la app: 500 g, 1 kg y baldes se cuentan solo por unidades.`);
-  }, async (p) => { // elegido por nombre
-    if (p.id === 'pack') { cambiarModoEncajar('pack'); return armarPack(); }
-    if (p.caja_controlada) { cambiarModoEncajar('caja'); return encajar(p); }
-    throw new Error(`${p.nombre} no se encaja en la app: 500 g, 1 kg y baldes se cuentan solo por unidades.`);
-  });
+    if (p.id === 'pack' || tipo === 'caja') return porProducto(p);
+    if (p.caja_controlada) throw new Error(`${p.nombre}: ese es el código del frasco. Pistolea el de la caja${p.uds_por_caja === 10 ? ', o usa Encajar sin pistolear (abajo)' : ''}.`);
+    throw new Error(`${p.nombre} no se encaja.`);
+  }, porProducto, (p) => p.caja_controlada || p.id === 'pack');
 };
-PANTALLAS.pack = () => PANTALLAS.encajar({ modo: 'pack' }); // enlaces antiguos
+PANTALLAS.pack = () => PANTALLAS.encajar(); // enlaces antiguos
 
-function cambiarModoEncajar(modo) {
-  if (E.ctx.modo === modo) return;
-  E.ctx.modo = modo; guardar('encajar_modo', modo); pintarModoEncajar();
-}
-function pintarModoEncajar() {
-  const modo = E.ctx.modo; if (!$('#segEnc')) return;
-  $('#segEnc').querySelectorAll('[data-modo]').forEach((b) => b.classList.toggle('elegida', b.dataset.modo === modo));
-  $('#guiaEnc').innerHTML = modo === 'caja'
-    ? guia('encajar', [
-      'Toma 12 frascos sueltos del mismo producto y ponlos en su caja.',
-      'Pistolea el <b>código de la caja</b> (no el del frasco). Suma 1 caja y resta 12 sueltos.',
-      'Solo 300 g y 550 g, que son las cajas con código. 500 g, 1 kg y baldes se cuentan solo por unidades.',
-    ])
-    : guia('pack', [
-      'Arma la cajita con 1 frasco de Ulmo, 1 de Bosque Nativo y 1 de Quillay de 300 g.',
-      'Pistolea el <b>código de la cajita</b>. Suma 1 pack y resta 1 frasco suelto de cada variedad.',
-    ]);
-  $('#manualEnc').innerHTML = modo === 'caja'
-    ? `<h3>Sin pistolear</h3><p class="nota">Si la caja no tiene etiqueta o la pistola no la lee.</p>
-       <div class="fila-botones"><select id="encProd" aria-label="Producto a encajar">${[...E.productos.values()].filter((p) => p.activo && p.caja_controlada).map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('')}</select>
-       <button type="button" class="sec" id="encManual">+1 caja</button></div>`
-    : `<h3>Sin pistolear</h3><div class="fila-botones"><button type="button" class="sec" id="packManual">+1 pack</button></div>`;
-  const em = $('#encManual'); if (em) em.onclick = () => encolar(() => encajar(E.productos.get($('#encProd').value)));
-  const pm = $('#packManual'); if (pm) pm.onclick = () => encolar(armarPack);
-  activarGuias();
+// El aviso se muestra la primera vez que se encaja cada producto en esta visita a la pantalla (salvo "No volver a mostrar")
+async function avisoEncajar(clave, titulo, html) {
+  if (E.avisosVistos.has(clave)) return true;
+  const ok = await avisoPrimeraVez(clave === 'pack' ? 'pack' : 'encajar', titulo, html);
+  if (ok) E.avisosVistos.add(clave);
+  return ok;
 }
 
 async function encajar(p) {
-  const ok = await avisoPrimeraVez('encajar', 'Encajar',
-    `Vas a encajar <b>${esc(p.nombre)}</b> en una caja de 12.<br>Se suma 1 caja y se descuentan <b>12 frascos sueltos</b> del inventario.`);
+  const ok = await avisoEncajar('enc_' + p.id, 'Encajar',
+    `Vas a encajar <b>${esc(p.nombre)}</b> en una caja de ${p.uds_por_caja}.<br>Se suma 1 caja y se descuentan <b>${p.uds_por_caja} frascos sueltos</b> del inventario.`);
   if (!ok) return;
   const r = await rpc('op_encajar', { p_producto: p.id, p_cajas: 1 });
-  avisosDe(r); registrar(true, `${p.nombre}: +1 caja (−12 sueltas). Stock: ${textoStock(p, r.stock.sueltas, r.stock.cajas)}`, { op: r.operacion });
+  avisosDe(r); registrar(true, `${p.nombre}: +1 caja (−${p.uds_por_caja} sueltas). Stock: ${textoStock(p, r.stock.sueltas, r.stock.cajas)}`, { op: r.operacion });
 }
 async function armarPack() {
-  const ok = await avisoPrimeraVez('pack', 'Armar pack',
+  const ok = await avisoEncajar('pack', 'Armar pack',
     'Vas a armar <b>1 Pack Variedades 3 × 300 g</b>.<br>Se suma 1 pack y se descuenta <b>1 frasco suelto</b> de Ulmo, de Bosque Nativo y de Quillay 300 g.');
   if (!ok) return;
   const r = await rpc('op_armar_pack', { p_cantidad: 1 });
@@ -1160,7 +1154,7 @@ PANTALLAS.conteo = async () => {
   const t = $('#tablaConteo'); if (!t) return;
   E.ctx.stock = s;
   $('#notaConteo').value = ops.count ? `Conteo ${new Date().toLocaleDateString('es-CL')}` : 'Conteo inicial';
-  t.innerHTML = '<tr><th>Producto</th><th class="num">Cajas de 12</th><th class="num">Sueltas / unidades</th></tr>' + s.map((x) => `<tr>
+  t.innerHTML = '<tr><th>Producto</th><th class="num">Cajas</th><th class="num">Sueltas / unidades</th></tr>' + s.map((x) => `<tr>
       <td><b>${esc(x.nombre)}</b><br><span class="chico">La app tiene: ${textoStock(x, x.sueltas, x.cajas)}</span></td>
       <td class="num">${x.caja_controlada ? `<input type="number" min="0" inputmode="numeric" data-conteo="${x.id}" data-campo="cajas" placeholder="cajas" aria-label="Cajas de ${esc(x.nombre)}">` : '<span class="chico">—</span>'}</td>
       <td class="num"><input type="number" min="0" inputmode="numeric" data-conteo="${x.id}" data-campo="sueltas" placeholder="${unidadDe(x)[1]}" aria-label="Sueltas de ${esc(x.nombre)}"></td></tr>`).join('');
@@ -1224,7 +1218,7 @@ PANTALLAS.codigo = ({ codigo }) => {
       ${[...E.productos.values()].filter((p) => p.activo).map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('')}</select></label>
     <fieldset><legend>Es el código de…</legend>
       <label class="radio"><input type="radio" name="tipo" value="unidad" checked> un frasco o cajita (unidad)</label>
-      <label class="radio"><input type="radio" name="tipo" value="caja"> una caja de 12 (solo 300 y 550 g)</label>
+      <label class="radio"><input type="radio" name="tipo" value="caja"> una caja (de 12 en 300 y 550 g; de 10 en 500 g y 1 kg)</label>
     </fieldset>
     <button type="submit">Registrar</button>
   </form>`;
@@ -1317,7 +1311,7 @@ PANTALLAS.ayuda = () => {
     <p class="chico">Las facturas de supermercado siguen el mismo camino, pero se cargan con <b>Subir factura</b>.</p></section>
   <section class="tarjeta"><h3>Varios iguales de una vez</h3>
     <p>En <b>Envasar</b> y al preparar un pedido, toca ×10, ×12 u Otra (la cantidad se escribe ahí mismo) y pistolea un solo frasco o caja: esa lectura cuenta por esa cantidad. Después vuelve sola a ×1.</p>
-    <p class="chico">Los frascos de 500 g y 1 kg sí tienen código y se pistolean igual que los demás. Sus cajas de 10 no tienen código, así que no se encajan en la app: se cuentan por unidades.</p></section>
+    <p class="chico">Los frascos de 500 g y 1 kg tienen código y se pistolean igual que los demás. Sus cajas de 10 casi nunca llevan etiqueta: se registran en <b>Encajar</b>, en el recuadro "Encajar sin pistolear".</p></section>
   <section class="tarjeta"><h3>Nombres y avisos</h3>
     <p>Para cambiar el nombre de un producto o de un tambor, o volver a mostrar los avisos que marcaste "No volver a mostrar", entra a <b>Configuración</b>.</p></section>`);
 };

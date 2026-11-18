@@ -120,6 +120,8 @@ a.atajo { color: var(--petroleo); font-weight: 700; text-decoration: underline; 
 .uso.falta { background: var(--mal-fondo); border-color: var(--mal); }
 .uso select { flex: 1 1 120px; width: auto; min-width: 0; min-height: 40px; padding: 4px 8px; }
 .uso .kgbarra { white-space: nowrap; }
+.uso .cambiar { background: none; border: 0; color: var(--petroleo); text-decoration: underline; padding: 0 2px; min-height: 0; font-size: 14px; }
+#encProd { flex: 1; min-width: 200px; }
 .botonera { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* Listas, tablas y fichas */
