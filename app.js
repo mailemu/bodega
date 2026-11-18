@@ -206,7 +206,7 @@ function htmlPistola(texto, extra = '', debajo = '') {
     <label for="scan">${esc(texto)}</label>${extra}
     <div class="fila">
       <input id="scan" inputmode="none" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Esperando la pistola…">
-      <button type="button" class="sec" id="manual">Escribir a mano</button>
+      <button type="button" class="sec" id="manual">Búsqueda manual</button>
     </div>
     <ul class="sugerencias" id="sugerencias"></ul>
     <div class="estado" id="estadoScan"></div>
@@ -272,7 +272,7 @@ function activarPistola(alLeer, alElegir = null, filtro = null) {
   });
   inp.addEventListener('focus', estado);
   inp.addEventListener('blur', () => setTimeout(() => {
-    // Si dejó "Escribir a mano" sin terminar, vuelve al modo pistola (si no, el teclado reaparece cada vez)
+    // Si dejó "Búsqueda manual" sin terminar, vuelve al modo pistola (si no, el teclado reaparece cada vez)
     if (manual && document.activeElement !== inp) { salirManual(); limpiarSug(); }
     enfocar();
   }, 150));
@@ -486,7 +486,7 @@ PANTALLAS.envasar = () => {
   app.innerHTML = guia('envasar', [
     'Revisa que cada variedad tenga su tambor en uso (abajo). Si no, ábrelo en <b>Tambores</b>.',
     'Pistolea <b>cada frasco</b> que envasas, o <b>la caja</b> si envasas directo en caja de 12. Si son varios iguales, toca <b>×10</b> (u otra cantidad) y pistolea uno.',
-    'Lo que no tiene código (baldes): toca <b>Escribir a mano</b>, escribe "balde" y elige la variedad.',
+    'Lo que no tiene código (baldes): toca <b>Búsqueda manual</b>, escribe "balde" y elige la variedad.',
     'Cada lectura descuenta los kilos del tambor y suma al stock. ¿Te equivocaste? Toca <b>Deshacer</b> en esa línea.',
   ]) + `
   ${htmlPistola('Pistolea el frasco o la caja', htmlMultiplicador())}
@@ -548,7 +548,7 @@ PANTALLAS.encajar = () => {
     '<b>Cajas de 12</b> (300 y 550 g): junta 12 frascos sueltos del mismo producto en su caja y pistolea el <b>código de la caja</b>, no el del frasco.',
     '<b>Packs 3 × 300 g</b>: arma la cajita con 1 frasco de Ulmo, 1 de Bosque Nativo y 1 de Quillay de 300 g y pistolea el <b>código de la cajita</b>.',
     '<b>Cajas de 10</b> (500 g y 1 kg) y cualquier caja sin código o sin etiqueta: usa el recuadro de abajo, <b>Encajar sin pistolear</b>. Elige el producto y toca <b>Añadir caja</b> una vez por cada caja.',
-    'También puedes tocar <b>Escribir a mano</b> y escribir el código o el nombre del producto (ej.: "ulmo 1kg", "pack"): las opciones aparecen mientras escribes.',
+    'También puedes tocar <b>Búsqueda manual</b> y escribir el código o el nombre del producto (ej.: "ulmo 1kg", "pack"): las opciones aparecen mientras escribes.',
     'Cada caja suma 1 caja al stock y descuenta sus frascos sueltos (12 o 10; el pack, 1 de cada variedad). ¿Te equivocaste? Toca <b>Deshacer</b>.',
   ]) + htmlPistola('Pistolea la caja o la cajita del pack') + `
   <section class="tarjeta"><h3>Encajar sin pistolear</h3><p class="nota">Para cajas sin código o etiqueta.</p>
@@ -600,7 +600,7 @@ async function armarPack() {
 PANTALLAS.pedidos = async () => {
   app.innerHTML = guia('pedidos_v2', [
     '<b>Subir factura</b> o <b>Nuevo pedido</b> solo <b>cargan</b> el pedido: queda en <b>Pendientes</b>, por armar.',
-    'Para armarlo, ábrelo y pistolea cada caja o frasco a medida que lo juntas (o toca <b>Marcar armado</b>). Cuando está completo pasa a <b>Por retirar</b>.',
+    'Para armarlo, ábrelo y pistolea cada caja o frasco a medida que lo juntas (lo que no se pueda pistolear, con <b>Búsqueda manual</b>). Cuando está completo pasa a <b>Por retirar</b>.',
     'Cuando sale de la bodega, ábrelo en Por retirar y toca <b>Marcar retirado</b>: recién ahí se descuenta del stock.',
   ]) + `<div class="fila-botones"><button class="sec" data-ir="pedido">+ Nuevo pedido</button><button class="sec" data-ir="factura">+ Subir factura</button></div>
   <div id="lista"><p class="nota">Cargando…</p></div>`;
@@ -624,14 +624,13 @@ PANTALLAS.pedidos = async () => {
 PANTALLAS.preparar = async ({ id }) => {
   app.innerHTML = `<h2 id="titPed">Cargando…</h2><p id="resPed" class="nota"></p>` + guia('preparar_v2', [
     'Para armar el pedido, pistolea cada caja o frasco a medida que lo juntas. La línea avanza y te avisa si sobra o no está en el pedido.',
-    'Si son varios iguales (ej.: 10 frascos de 1 kg), toca <b>×10</b> y pistolea uno solo. Lo que no tiene código: <b>+1</b> o <b>Escribir a mano</b>.',
+    'Si son varios iguales (ej.: 10 frascos de 1 kg), toca <b>×10</b> y pistolea uno solo. Si no tienes la pistola o algo no tiene código: <b>+1</b> o <b>Búsqueda manual</b>.',
     'Si vas encajando frascos sueltos mientras armas, marca «Estoy armando cajas nuevas»: cada caja que pistoleas se encaja y se suma al pedido de una vez.',
-    'Si lo armaste sin pistolear, toca <b>Marcar armado sin pistolear</b>. Con todo armado pasa a «Por retirar».',
+    'Con todo armado, el pedido pasa a «Por retirar».',
     'Cuando sale de la bodega, toca <b>Marcar retirado</b> (solo se puede con el pedido armado).',
   ]) + `${htmlPistola('Pistolea cada frasco o caja de este pedido', htmlMultiplicador(),
       '<label class="check chico oculto" id="lblCajasNuevas"><input type="checkbox" id="cajasNuevas"> Estoy armando cajas nuevas con frascos sueltos: encajarlas al pistolearlas</label>')}
-  <section class="tarjeta"><h3>Lo que lleva el pedido</h3><table class="tabla" id="lineas"></table>
-    <div class="fila-botones"><button type="button" class="sec mini oculto" id="btnArmado">Marcar armado sin pistolear</button></div></section>
+  <section class="tarjeta"><h3>Lo que lleva el pedido</h3><table class="tabla" id="lineas"></table></section>
   <div class="separador-retiro"><button type="button" class="grande ancho" id="btnRetirar"><b>Marcar retirado</b><span>Salió de la bodega: se descuenta del stock</span></button></div>
   <div class="fila-botones"><button type="button" class="sec mini oculto" id="btnEditarPed">Editar pedido</button><button type="button" class="sec mini oculto" id="btnCadena">Corregir cadena</button>
     <button type="button" class="peligro mini" id="btnAnularPed">Anular este pedido</button></div>`;
@@ -644,7 +643,6 @@ PANTALLAS.preparar = async ({ id }) => {
       await preparar(id, p, l.unidad, false, tomarMult());
     }, (p) => (E.ctx.lineas || []).some((l) => l.producto_id === p.id));
   $('#btnRetirar').onclick = () => encolar(() => retirar(id));
-  $('#btnArmado').onclick = () => encolar(() => marcarArmado(id));
   $('#cajasNuevas').onchange = (ev) => { E.ctx.cajasNuevas = ev.target.checked; enfocarScan(); };
   $('#btnAnularPed').onclick = () => encolar(() => anularPedido(id));
   $('#btnEditarPed').onclick = () => ir('pedido', { id });
@@ -687,8 +685,7 @@ function pintarPedido() {
   const abierto = p.estado === 'por_retirar';
   $('#btnRetirar').classList.toggle('oculto', !abierto);
   $('#btnRetirar').disabled = !p.completo;
-  $('#btnRetirar').querySelector('span').textContent = p.completo ? 'Salió de la bodega: se descuenta del stock' : 'Primero arma el pedido: pistolea todo o toca Marcar armado';
-  $('#btnArmado').classList.toggle('oculto', !abierto || p.completo);
+  $('#btnRetirar').querySelector('span').textContent = p.completo ? 'Salió de la bodega: se descuenta del stock' : 'Primero arma el pedido: pistolea (o busca a mano) todo lo que lleva';
   // La opción de cajas nuevas solo se muestra si el pedido lleva cajas o packs por armar
   $('#lblCajasNuevas').classList.toggle('oculto', !abierto || !ls.some((l) => l.faltan > 0 && (l.unidad === 'caja' || l.producto_id === 'pack')));
   $('#btnAnularPed').classList.toggle('oculto', !abierto);
@@ -727,19 +724,9 @@ async function preparar(id, p, unidad, desarmar = false, cantidad = 1) {
   if (r.pedido.completo) aviso('Pedido armado: pasa a «Por retirar».', 'ok');
 }
 
-async function marcarArmado(id) {
-  const p = E.ctx.pedido; if (!p) return;
-  const faltan = (p.cajas + p.unidades) - (p.cajas_prep + p.unidades_prep);
-  if (!confirm(`¿Marcar armado ${p.etiqueta}?\n\n${faltan === 1 ? 'Falta 1 por pistolear' : `Faltan ${faltan} por pistolear`}: se dan por armados (si falta armar cajas o packs, se arman; si faltan sueltas, se desarma una caja).`)) return;
-  const r = await rpc('op_marcar_armado', { p_pedido: id });
-  avisosDe(r); pitido(true); aviso(`${p.etiqueta}: armado, pasa a «Por retirar».`, 'ok');
-  registrar(true, `${p.etiqueta}: marcado armado`);
-  await cargarPedido(id);
-}
-
 async function retirar(id) {
   const p = E.ctx.pedido; if (!p) return;
-  if (!p.completo) throw new Error('Primero arma el pedido: pistolea todo o toca Marcar armado.');
+  if (!p.completo) throw new Error('Primero arma el pedido: pistolea (o busca a mano) todo lo que lleva.');
   if (!confirm(`¿Confirmas que ${p.etiqueta} salió de la bodega? Se descuenta del stock.`)) return;
   const r = await rpc('op_retirar', { p_pedido: id });
   avisosDe(r); pitido(true);
@@ -1414,7 +1401,7 @@ PANTALLAS.ayuda = () => {
     <li><b>Computador</b>: enchúfala por USB y listo.</li>
     <li><b>Celular o tablet Android</b>: si es inalámbrica, emparéjala en Ajustes → Bluetooth (en modo teclado, "HID"; el manual de la pistola trae el código para activarlo). Si es con cable, necesitas un adaptador USB-C a USB (OTG).</li>
     <li>Para probar, abre <b>Envasar</b>. El recuadro "Esperando la pistola" debe estar marcado; pistolea un frasco y debe aparecer la línea con un pitido.</li></ul>
-    <p class="chico">El celular no abre su teclado en ese recuadro, para que no tape la pantalla. Para escribir un código o buscar un producto por nombre (por ejemplo, "balde"), usa "Escribir a mano": las opciones aparecen mientras escribes.</p></section>
+    <p class="chico">El celular no abre su teclado en ese recuadro, para que no tape la pantalla. Para escribir un código o buscar un producto por nombre (por ejemplo, "balde"), usa "Búsqueda manual": las opciones aparecen mientras escribes. Si no tienes la pistola, todo se puede registrar así.</p></section>
   <section class="tarjeta"><h3>Si me equivoco</h3><ul>
     <li>Justo después: toca <b>Deshacer</b> en la línea.</li>
     <li>Más tarde: entra al <b>Historial</b> y toca <b>Deshacer</b> en ese registro.</li>
@@ -1422,7 +1409,7 @@ PANTALLAS.ayuda = () => {
     <li>Un tambor mal anotado: en <b>Tambores</b>, usa <b>Corregir</b> o <b>Anular</b>.</li></ul></section>
   <section class="tarjeta"><h3>Pedidos: cargar, armar y retirar</h3><ol>
     <li><b>Cargar</b>: un pedido de supermercado se carga con <b>Subir factura</b> (lee el XML); los de Mercado Libre, Creado en Chile, Berni o clientes, con <b>Nuevo pedido</b>. Cargar no arma nada: el pedido queda <b>pendiente</b> en <b>Pedidos</b>.</li>
-    <li><b>Armar</b>: la Pipa lo abre y pistolea cada frasco o caja a medida que lo junta (o toca Marcar armado si lo armó sin pistolear). Completo, pasa a <b>Por retirar</b>.</li>
+    <li><b>Armar</b>: la Pipa lo abre y pistolea cada frasco o caja a medida que lo junta (sin pistola, con Búsqueda manual). Completo, pasa a <b>Por retirar</b>.</li>
     <li><b>Retirar</b>: cuando sale de la bodega (courier, Berni o el cliente), se toca Marcar retirado y recién ahí se descuenta del stock. Solo se puede con el pedido armado.</li></ol>
     <p class="chico">En <b>Stock</b> se ve, por producto, cuánto está en pedidos pendientes y cuánto armado por retirar.</p></section>
   <section class="tarjeta"><h3>Varios iguales de una vez</h3>
