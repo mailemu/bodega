@@ -152,6 +152,19 @@ table.tabla { width: 100%; border-collapse: collapse; }
 .aviso.error { background: var(--mal); }
 .aviso.alerta { background: var(--alerta-fondo); color: var(--alerta); border: 1.5px solid var(--miel); font-weight: 700; }
 
+/* Ventana de confirmación */
+.dialogo-fondo { position: fixed; inset: 0; z-index: 20; background: rgba(13,65,65,.45); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.dialogo { background: #fff; border-radius: 18px; padding: 18px 18px 10px; width: 100%; max-width: 440px; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+.dialogo .cuerpo { margin: 0 0 12px; line-height: 1.5; }
+.dialogo label.check { margin: 6px 0 4px; }
+
+/* Selector de opción (Cajas de 12 / Packs) y cantidad por lectura */
+.segmento { margin: 0 0 12px; }
+.segmento button { flex: 1; min-height: 52px; font-weight: 700; }
+.mult { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; font-size: 14px; color: var(--suave); }
+.mult button { min-height: 36px; padding: 4px 12px; background: #fff; color: var(--petroleo); border: 1.5px solid var(--gris); }
+.mult button.elegida { background: var(--miel); color: #fff; border-color: var(--miel); }
+
 @media (max-width: 480px) {
   #cab .titulo { font-size: 18px; }
   .quien span { display: none; }

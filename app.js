@@ -19,14 +19,16 @@ const RUT_CADENA = {
   '76042014-K': { sugerida: 'lider', texto: 'RUT de Walmart: sugerencia Líder. Marca también el CD.' },
   '81201000-K': { sugerida: null, texto: 'RUT de Cencosud: Jumbo y Santa Isabel comparten RUT. Márcala tú.' },
 };
-const TITULOS = { inicio: 'Bodega', envasar: 'Envasar', encajar: 'Encajar', pack: 'Armar pack', pedidos: 'Por retirar', preparar: 'Preparar pedido',
+const TITULOS = { inicio: 'Bodega', envasar: 'Envasar', encajar: 'Encajar y packs', pack: 'Encajar y packs', pedidos: 'Por retirar', preparar: 'Preparar pedido',
   factura: 'Subir factura', pedido: 'Nuevo pedido', stock: 'Stock', tambores: 'Tambores', historial: 'Historial', conteo: 'Conteo de inventario',
   codigo: 'Registrar código', ayuda: 'Ayuda' };
 const PADRE = { preparar: 'pedidos', pedido: 'pedidos' }; // el resto vuelve al menú
+// Al editar un pedido, la pantalla de arriba es ese mismo pedido
+const padreDe = (p, ctx) => (p === 'pedido' && ctx && ctx.id ? 'preparar' : PADRE[p] || 'inicio');
 
 const E = {
   usuaria: null, nombre: '', nombres: new Map(), productos: new Map(), codigos: new Map(), tambores: [],
-  log: [], logId: 0, pantalla: null, ctx: {}, volverA: null, factura: null,
+  log: [], logId: 0, pantalla: null, ctx: {}, volverA: null, factura: null, mult: 1,
 };
 
 const app = document.getElementById('app');
@@ -63,6 +65,53 @@ function aviso(texto, tipo = 'info', accion = null) {
   setTimeout(() => d.remove(), accion ? 12000 : tipo === 'error' || tipo === 'alerta' ? 8000 : 4500);
 }
 const avisosDe = (r) => (r?.avisos || []).forEach((a) => aviso(a, 'alerta'));
+
+// Ventana de confirmación propia: admite una casilla ("no volver a mostrar") y campos (alAceptar lee sus valores).
+// No pone el foco en "Aceptar", para que un Enter de la pistola no la confirme sin querer.
+function dialogo({ titulo, html, aceptar = 'Aceptar', cancelar = 'Cancelar', casilla = null, alAceptar = null }) {
+  return new Promise((resolver) => {
+    const fondo = document.createElement('div'); fondo.className = 'dialogo-fondo';
+    fondo.innerHTML = `<div class="dialogo" role="dialog" aria-modal="true"><h3>${esc(titulo)}</h3><div class="cuerpo">${html}</div>
+      ${casilla ? `<label class="check"><input type="checkbox" class="dlg-casilla"> ${esc(casilla)}</label>` : ''}
+      <div class="fila-botones"><button type="button" class="dlg-ok">${esc(aceptar)}</button>${cancelar ? `<button type="button" class="sec dlg-no">${esc(cancelar)}</button>` : ''}</div></div>`;
+    document.body.appendChild(fondo);
+    const cerrar = (ok) => {
+      const r = { ok, casilla: !!fondo.querySelector('.dlg-casilla')?.checked, valor: ok && alAceptar ? alAceptar(fondo) : null };
+      fondo.remove(); resolver(r);
+    };
+    fondo.querySelector('.dlg-ok').onclick = () => cerrar(true);
+    const no = fondo.querySelector('.dlg-no'); if (no) no.onclick = () => cerrar(false);
+  });
+}
+
+// Aviso que se muestra hasta que la usuaria marque "No volver a mostrar" (se recuerda por usuaria en este aparato)
+async function avisoPrimeraVez(clave, titulo, html) {
+  const k = `no_mostrar_${clave}_${E.usuaria}`;
+  if (leer(k) === '1') return true;
+  const r = await dialogo({ titulo, html, aceptar: 'Sí, continuar', casilla: 'No volver a mostrar este mensaje' });
+  if (r.ok && r.casilla) guardar(k, '1');
+  return r.ok;
+}
+
+// Cantidad por lectura (×1, ×10, ×12 u otra): vale para la próxima lectura y después vuelve a ×1
+function htmlMultiplicador() {
+  return `<div class="mult" id="mult"></div>`;
+}
+function pintarMult() {
+  const m = $('#mult'); if (!m) return;
+  const fijo = [1, 10, 12].includes(E.mult);
+  m.innerHTML = `<span>Cada lectura vale</span>${[1, 10, 12].map((n) => `<button type="button" class="mini ${E.mult === n ? 'elegida' : ''}" data-mult="${n}">×${n}</button>`).join('')}
+    <button type="button" class="mini ${fijo ? '' : 'elegida'}" data-mult="otra">${fijo ? 'Otra' : '×' + E.mult}</button>
+    ${E.mult > 1 ? '<span class="chico">(solo la próxima lectura)</span>' : ''}`;
+}
+function tomarMult() { const n = E.mult; if (n !== 1) { E.mult = 1; pintarMult(); } return n; }
+document.addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-mult]'); if (!b) return;
+  let n = b.dataset.mult === 'otra' ? parseInt(prompt('¿Cuánto vale la próxima lectura?', '2') || '', 10) : Number(b.dataset.mult);
+  if (!(n >= 1 && n <= 500)) n = 1;
+  E.mult = n; pintarMult();
+  const s = $('#scan'); if (s) s.focus({ preventScroll: true });
+});
 
 function mensaje(e) {
   const m = e?.message || String(e);
@@ -235,7 +284,7 @@ const PANTALLAS = {};
 function ir(p, ctx = {}, { historial = true, reemplazar = false } = {}) {
   if (p === 'codigo' && !ctx.codigo) E.volverA = null; // entrada desde el menú: no volver a otra pantalla
   const desde = E.pantalla;
-  E.pantalla = p; E.ctx = { ...ctx }; E.log = [];
+  E.pantalla = p; E.ctx = { ...ctx }; E.log = []; E.mult = 1;
   if (reemplazar) history.replaceState({ p, ctx, desde: history.state && history.state.desde }, '', '#' + p);
   else if (historial) history.pushState({ p, ctx, desde }, '', '#' + p);
   window.scrollTo(0, 0); pintarCabecera();
@@ -254,7 +303,7 @@ document.addEventListener('click', (ev) => {
 
 function pintarCabecera() {
   const enInicio = !E.usuaria || E.pantalla === 'inicio';
-  const padre = PADRE[E.pantalla] || 'inicio';
+  const padre = padreDe(E.pantalla, E.ctx);
   $('#cab').innerHTML = `
     ${enInicio ? '' : `<button type="button" class="volver" id="btnVolver">← ${padre === 'inicio' ? 'Menú' : TITULOS[padre]}</button>`}
     <div class="titulo">${enInicio ? 'Mailemu <span>Bodega</span>' : esc(TITULOS[E.pantalla] || '')}</div>
@@ -263,7 +312,7 @@ function pintarCabecera() {
   if (s) s.onclick = async () => { if (confirm('¿Cerrar sesión en este aparato?')) await sb.auth.signOut(); };
   // La flecha sigue el mismo camino que el botón "atrás" del celular cuando se llegó desde la pantalla de arriba
   const v = $('#btnVolver');
-  if (v) v.onclick = () => { if (history.state && history.state.desde === padre) history.back(); else ir(padre); };
+  if (v) v.onclick = () => { if (history.state && history.state.desde === padre) history.back(); else ir(padre, padre === 'preparar' ? { id: E.ctx.id } : {}); };
 }
 
 // ───────── Sesión ─────────
@@ -320,8 +369,7 @@ PANTALLAS.inicio = async () => {
   <div class="grupo">En la bodega</div>
   <div class="menu">
     <button class="grande" data-ir="envasar"><b>Envasar</b><span>Registra frascos y cajas que salen del tambor</span></button>
-    <button class="grande" data-ir="encajar"><b>Encajar</b><span>Junta 12 frascos sueltos en una caja</span></button>
-    <button class="grande" data-ir="pack"><b>Armar pack</b><span>Pack Variedades 3 × 300 g</span></button>
+    <button class="grande" data-ir="encajar"><b>Encajar y packs</b><span>Cajas de 12 frascos o Pack Variedades 3 × 300 g</span></button>
     <button class="grande" data-ir="pedidos"><b>Por retirar <span class="contador oculto" id="nPend"></span></b><span>Prepara pedidos y facturas y márcalos retirados</span></button>
   </div>
   <div class="grupo">Cargar</div>
@@ -360,14 +408,14 @@ PANTALLAS.envasar = () => {
     'Cada lectura descuenta los kilos del tambor y suma al stock.',
     '¿Te equivocaste? Toca <b>Deshacer</b> en esa línea.',
   ]) + `
-  ${htmlPistola('Pistolea el frasco o la caja', '<div class="usomini" id="usoMini"></div>')}
+  ${htmlPistola('Pistolea el frasco o la caja', '<div class="usomini" id="usoMini"></div>' + htmlMultiplicador())}
   <h3>Tambores en uso</h3>
   <div class="usos" id="usos"></div>
   <section class="tarjeta"><h3>Productos sin código</h3>
     <p class="nota">Botones para lo que no se pistolea: la caja de 10 de 500 g y 1 kg (los frascos sueltos sí se pistolean) y los baldes.</p>
     <div class="botonera" id="sinCodigo"></div>
   </section>`;
-  pintarUsos();
+  pintarUsos(); pintarMult();
   $('#sinCodigo').innerHTML = [...E.productos.values()]
     .filter((p) => p.activo && p.variedad && !p.caja_controlada)
     .map((p) => `<button type="button" class="sec mini" data-envasar="${p.id}">${esc(p.nombre)} · ${p.uds_por_caja ? `+1 caja (${p.uds_por_caja} u)` : '+1 balde'}</button>`)
@@ -376,8 +424,9 @@ PANTALLAS.envasar = () => {
     b.onclick = () => { const p = E.productos.get(b.dataset.envasar); encolar(() => envasar(p, p.uds_por_caja || 1, 0)); };
   });
   activarPistola(async (cod) => {
+    const n = tomarMult();
     const { p, tipo } = buscarCodigo(cod);
-    await envasar(p, tipo === 'caja' ? 0 : 1, tipo === 'caja' ? 1 : 0);
+    await envasar(p, tipo === 'caja' ? 0 : n, tipo === 'caja' ? n : 0);
   });
 };
 
@@ -410,43 +459,74 @@ async function envasar(p, sueltas, cajas) {
   const r = await rpc('op_envasar', { p_producto: p.id, p_tambor: t.id, p_sueltas: sueltas, p_cajas: cajas });
   const i = E.tambores.findIndex((x) => x.id === r.tambor.id); if (i >= 0) E.tambores[i] = r.tambor;
   pintarUsos(); avisosDe(r);
-  const que = cajas ? '+1 caja de 12' : !p.uds_por_caja ? '+1 balde' : sueltas === 1 ? '+1 frasco' : `+${sueltas} unidades`;
+  const que = cajas ? `+${plural(cajas, 'caja', 'cajas')} de 12` : !p.uds_por_caja ? `+${plural(sueltas, 'balde', 'baldes')}` : sueltas === 1 ? '+1 frasco' : `+${sueltas} frascos`;
   registrar(true, `${p.nombre} ${que}. Stock: ${textoStock(p, r.stock.sueltas, r.stock.cajas)}. Tambor ${nombreTambor(r.tambor)}: quedan ${num(r.tambor.kg_restantes)} kg`,
     { op: r.operacion, alDeshacer: async () => { await cargarTambores(); pintarUsos(); } });
 }
 
 // ───────── Encajar y armar pack ─────────
 
-PANTALLAS.encajar = () => {
-  app.innerHTML = guia('encajar', [
-    'Toma 12 frascos sueltos del mismo producto y ponlos en su caja.',
-    'Pistolea el <b>código de la caja</b> (no el del frasco). Suma 1 caja y resta 12 sueltos.',
-    'Solo para 300 g y 550 g, que son las cajas con código.',
-  ]) + htmlPistola('Pistolea la caja');
+// Una sola pantalla con dos opciones: cajas de 12 o packs. La pistola reconoce sola cuál es (caja o cajita del pack).
+PANTALLAS.encajar = ({ modo } = {}) => {
+  E.ctx.modo = modo || leer('encajar_modo') || 'caja';
+  app.innerHTML = `<div class="opciones segmento" id="segEnc">
+      <button type="button" data-modo="caja">Cajas de 12</button><button type="button" data-modo="pack">Packs 3 × 300 g</button></div>
+    <div id="guiaEnc"></div>
+    ${htmlPistola('Pistolea la caja o la cajita del pack')}
+    <section class="tarjeta" id="manualEnc"></section>`;
+  $('#segEnc').querySelectorAll('[data-modo]').forEach((b) => { b.onclick = () => cambiarModoEncajar(b.dataset.modo); });
+  pintarModoEncajar();
   activarPistola(async (cod) => {
     const { p, tipo } = buscarCodigo(cod);
-    if (tipo !== 'caja') throw new Error(`${p.nombre}: ese es el código del frasco. Pistolea el de la caja.`);
-    const r = await rpc('op_encajar', { p_producto: p.id, p_cajas: 1 });
-    avisosDe(r); registrar(true, `${p.nombre}: +1 caja. Stock: ${textoStock(p, r.stock.sueltas, r.stock.cajas)}`, { op: r.operacion });
+    if (p.id === 'pack') { cambiarModoEncajar('pack'); return armarPack(); }
+    if (tipo === 'caja') { cambiarModoEncajar('caja'); return encajar(p); }
+    if (p.caja_controlada) throw new Error(`${p.nombre}: ese es el código del frasco. Pistolea el código de la caja.`);
+    throw new Error(`${p.nombre} no se encaja en la app: 500 g, 1 kg y baldes se cuentan solo por unidades.`);
   });
 };
+PANTALLAS.pack = () => PANTALLAS.encajar({ modo: 'pack' }); // enlaces antiguos
 
-PANTALLAS.pack = () => {
-  app.innerHTML = guia('pack', [
-    'Arma la cajita con 1 frasco de Ulmo, 1 de Bosque Nativo y 1 de Quillay de 300 g.',
-    'Pistolea el <b>código de la cajita</b>. Suma 1 pack y resta 1 frasco suelto de cada variedad.',
-  ]) + htmlPistola('Pistolea la cajita del pack') + '<button type="button" class="sec" id="packManual">+1 pack sin pistolear</button>';
-  const armar = async () => {
-    const r = await rpc('op_armar_pack', { p_cantidad: 1 });
-    avisosDe(r); registrar(true, `+1 pack (${plural(r.stock?.sueltas, 'pack armado', 'packs armados')}). Se restó 1 frasco de cada 300 g`, { op: r.operacion });
-  };
-  $('#packManual').onclick = () => encolar(armar);
-  activarPistola(async (cod) => {
-    const { p } = buscarCodigo(cod);
-    if (p.id !== 'pack') throw new Error(`Ese código es de ${p.nombre}, no del pack.`);
-    await armar();
-  });
-};
+function cambiarModoEncajar(modo) {
+  if (E.ctx.modo === modo) return;
+  E.ctx.modo = modo; guardar('encajar_modo', modo); pintarModoEncajar();
+}
+function pintarModoEncajar() {
+  const modo = E.ctx.modo; if (!$('#segEnc')) return;
+  $('#segEnc').querySelectorAll('[data-modo]').forEach((b) => b.classList.toggle('elegida', b.dataset.modo === modo));
+  $('#guiaEnc').innerHTML = modo === 'caja'
+    ? guia('encajar', [
+      'Toma 12 frascos sueltos del mismo producto y ponlos en su caja.',
+      'Pistolea el <b>código de la caja</b> (no el del frasco). Suma 1 caja y resta 12 sueltos.',
+      'Solo 300 g y 550 g, que son las cajas con código. 500 g, 1 kg y baldes se cuentan solo por unidades.',
+    ])
+    : guia('pack', [
+      'Arma la cajita con 1 frasco de Ulmo, 1 de Bosque Nativo y 1 de Quillay de 300 g.',
+      'Pistolea el <b>código de la cajita</b>. Suma 1 pack y resta 1 frasco suelto de cada variedad.',
+    ]);
+  $('#manualEnc').innerHTML = modo === 'caja'
+    ? `<h3>Sin pistolear</h3><p class="nota">Si la caja no tiene etiqueta o la pistola no la lee.</p>
+       <div class="fila-botones"><select id="encProd" aria-label="Producto a encajar">${[...E.productos.values()].filter((p) => p.activo && p.caja_controlada).map((p) => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('')}</select>
+       <button type="button" class="sec" id="encManual">+1 caja</button></div>`
+    : `<h3>Sin pistolear</h3><div class="fila-botones"><button type="button" class="sec" id="packManual">+1 pack</button></div>`;
+  const em = $('#encManual'); if (em) em.onclick = () => encolar(() => encajar(E.productos.get($('#encProd').value)));
+  const pm = $('#packManual'); if (pm) pm.onclick = () => encolar(armarPack);
+  activarGuias();
+}
+
+async function encajar(p) {
+  const ok = await avisoPrimeraVez('encajar', 'Encajar',
+    `Vas a encajar <b>${esc(p.nombre)}</b> en una caja de 12.<br>Se suma 1 caja y se descuentan <b>12 frascos sueltos</b> del inventario.`);
+  if (!ok) return;
+  const r = await rpc('op_encajar', { p_producto: p.id, p_cajas: 1 });
+  avisosDe(r); registrar(true, `${p.nombre}: +1 caja (−12 sueltas). Stock: ${textoStock(p, r.stock.sueltas, r.stock.cajas)}`, { op: r.operacion });
+}
+async function armarPack() {
+  const ok = await avisoPrimeraVez('pack', 'Armar pack',
+    'Vas a armar <b>1 Pack Variedades 3 × 300 g</b>.<br>Se suma 1 pack y se descuenta <b>1 frasco suelto</b> de Ulmo, de Bosque Nativo y de Quillay 300 g.');
+  if (!ok) return;
+  const r = await rpc('op_armar_pack', { p_cantidad: 1 });
+  avisosDe(r); registrar(true, `+1 pack (${plural(r.stock?.sueltas, 'pack armado', 'packs armados')}). Se restó 1 frasco de cada 300 g`, { op: r.operacion });
+}
 
 // ───────── Por retirar ─────────
 
@@ -472,17 +552,36 @@ PANTALLAS.pedidos = async () => {
 PANTALLAS.preparar = async ({ id }) => {
   app.innerHTML = `<h2 id="titPed">Cargando…</h2><p id="resPed" class="nota"></p>` + guia('preparar', [
     'Pistolea cada caja o frasco a medida que lo juntas. La línea avanza y te avisa si sobra o no está en el pedido.',
+    'Si son varios iguales (ej.: 10 frascos de 1 kg), toca <b>×10</b> y pistolea uno solo.',
     'Los productos sin código (baldes) tienen un botón <b>+1</b>.',
     'Cuando lo retiren, aprieta <b>Marcar retirado</b>.',
-  ]) + `${htmlPistola('Pistolea cada frasco o caja de este pedido')}
+  ]) + `${htmlPistola('Pistolea cada frasco o caja de este pedido', htmlMultiplicador())}
   <section class="tarjeta"><table class="tabla" id="lineas"></table></section>
   <button type="button" class="grande" id="btnRetirar"><b>Marcar retirado</b><span>Sale del stock lo que dice el pedido</span></button>
-  <div class="fila-botones"><button type="button" class="peligro mini" id="btnAnularPed">Anular este pedido</button></div>`;
-  activarPistola(async (cod) => { const { p, tipo } = buscarCodigo(cod); await preparar(id, p, tipo); });
+  <div class="fila-botones"><button type="button" class="sec mini oculto" id="btnEditarPed">Editar pedido</button><button type="button" class="sec mini oculto" id="btnCadena">Corregir cadena</button>
+    <button type="button" class="peligro mini" id="btnAnularPed">Anular este pedido</button></div>`;
+  pintarMult();
+  activarPistola(async (cod) => { const n = tomarMult(); const { p, tipo } = buscarCodigo(cod); await preparar(id, p, tipo, false, n); });
   $('#btnRetirar').onclick = () => encolar(() => retirar(id));
   $('#btnAnularPed').onclick = () => encolar(() => anularPedido(id));
+  $('#btnEditarPed').onclick = () => ir('pedido', { id });
+  $('#btnCadena').onclick = () => encolar(() => corregirCadena(id));
   await cargarPedido(id);
 };
+
+// Facturas: se corrige solo la cadena (y el CD en Líder); el resto viene del XML
+async function corregirCadena(id) {
+  const p = E.ctx.pedido; if (!p) return;
+  const r = await dialogo({ titulo: `Corregir cadena · ${p.etiqueta}`, aceptar: 'Guardar',
+    html: `<label>Cadena<select class="dlg-cadena">${Object.entries(CADENAS).map(([k, n]) => `<option value="${k}" ${p.cadena === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <label>CD (solo Líder)<select class="dlg-cd"><option value="">—</option>${Object.entries(CDS).map(([k, n]) => `<option value="${k}" ${p.cd === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`,
+    alAceptar: (f) => ({ cadena: f.querySelector('.dlg-cadena').value, cd: f.querySelector('.dlg-cd').value || null }) });
+  if (!r.ok) return;
+  if (r.valor.cadena === 'lider' && !r.valor.cd) throw new Error('En Líder hay que elegir el CD.');
+  await rpc('corregir_cadena', { p_pedido: id, p_cadena: r.valor.cadena, p_cd: r.valor.cadena === 'lider' ? r.valor.cd : null });
+  pitido(true); aviso('Cadena corregida.', 'ok');
+  await cargarPedido(id);
+}
 
 async function cargarPedido(id) {
   const [p, l] = await Promise.all([
@@ -505,23 +604,26 @@ function pintarPedido() {
   const abierto = p.estado === 'por_retirar';
   $('#btnRetirar').classList.toggle('oculto', !abierto);
   $('#btnAnularPed').classList.toggle('oculto', !abierto);
+  $('#btnEditarPed').classList.toggle('oculto', !abierto || p.tipo !== 'pedido');
+  $('#btnCadena').classList.toggle('oculto', !abierto || p.destino !== 'supermercado');
+  $('#btnAnularPed').textContent = p.tipo === 'factura' ? 'Anular esta factura' : 'Anular este pedido';
   $('#lineas').innerHTML = '<tr><th>Producto</th><th class="num">Pide</th><th class="num">Listo</th><th></th></tr>' + ls.map((l) =>
     `<tr class="${l.faltan === 0 ? 'ok' : ''}"><td>${esc(l.producto)}</td><td class="num">${plural(l.cantidad, l.unidad === 'caja' ? 'caja' : 'unidad', l.unidad === 'caja' ? 'cajas' : 'unidades')}</td><td class="num">${l.preparado}</td>
      <td>${abierto && !tieneCodigo(l.producto_id, l.unidad) && l.faltan > 0 ? `<button type="button" class="mini" data-linea="${l.id}">+1</button>` : ''}</td></tr>`).join('');
   $('#lineas').querySelectorAll('[data-linea]').forEach((b) => {
     const l = ls.find((x) => x.id === Number(b.dataset.linea));
-    b.onclick = () => encolar(() => preparar(p.id, E.productos.get(l.producto_id), l.unidad));
+    b.onclick = () => encolar(() => preparar(p.id, E.productos.get(l.producto_id), l.unidad, false, tomarMult()));
   });
 }
 
-async function preparar(id, p, unidad, desarmar = false) {
+async function preparar(id, p, unidad, desarmar = false, cantidad = 1) {
   let r;
   try {
-    r = await rpc('op_preparar', { p_pedido: id, p_producto: p.id, p_unidad: unidad, p_cantidad: 1, p_desarmar: desarmar });
+    r = await rpc('op_preparar', { p_pedido: id, p_producto: p.id, p_unidad: unidad, p_cantidad: cantidad, p_desarmar: desarmar });
   } catch (e) {
     if (e.codigo === 'FALTAN_SUELTAS' && !desarmar) {
       pitido(false);
-      if (confirm(e.message)) return preparar(id, p, unidad, true);
+      if (confirm(e.message)) return preparar(id, p, unidad, true, cantidad);
       throw new Error(`${p.nombre}: no se pistoleó (no se desarmó la caja)`);
     }
     throw e;
@@ -531,7 +633,7 @@ async function preparar(id, p, unidad, desarmar = false) {
     const i = E.ctx.lineas.findIndex((x) => x.id === r.linea.id); if (i >= 0) E.ctx.lineas[i] = r.linea;
     E.ctx.pedido = r.pedido; pintarPedido();
   }
-  registrar(true, `${p.nombre} (${unidad === 'caja' ? 'caja' : 'unidad'}): ${r.linea.faltan ? `faltan ${r.linea.faltan}` : 'línea completa'}`,
+  registrar(true, `${p.nombre} (${cantidad > 1 ? cantidad + ' ' : ''}${unidad === 'caja' ? (cantidad > 1 ? 'cajas' : 'caja') : (cantidad > 1 ? 'unidades' : 'unidad')}): ${r.linea.faltan ? `faltan ${r.linea.faltan}` : 'línea completa'}`,
     { op: r.operacion, alDeshacer: () => cargarPedido(id) });
   if (r.pedido.completo) aviso('Pedido completo: ya puedes marcarlo retirado.', 'ok');
 }
@@ -555,8 +657,8 @@ async function retirar(id) {
 }
 
 // Vuelve a la pantalla de arriba sin dejar en el historial la que ya no sirve (pedido retirado o anulado)
-function volverAPantalla(p) {
-  if (history.state && history.state.desde === p) history.back(); else ir(p, {}, { reemplazar: true });
+function volverAPantalla(p, ctx = {}) {
+  if (history.state && history.state.desde === p) history.back(); else ir(p, ctx, { reemplazar: true });
 }
 
 async function anularPedido(id) {
@@ -571,9 +673,10 @@ async function anularPedido(id) {
 
 // ───────── Nuevo pedido ─────────
 
-PANTALLAS.pedido = async () => {
-  E.ctx.np = { destino: null, cadena: null, cd: null };
-  app.innerHTML = guia('pedido', [
+// Nuevo pedido, o edición de uno existente si viene { id }
+PANTALLAS.pedido = async ({ id } = {}) => {
+  E.ctx.np = { destino: null, cadena: null, cd: null, editar: id || null };
+  app.innerHTML = (id ? '<p class="aviso-inicio" id="npEditando">Cargando el pedido…</p>' : '') + guia('pedido', [
     'Elige a quién va el pedido.',
     'Escribe cuántas cajas o unidades lleva de cada producto (deja en blanco lo que no lleva).',
     'Al crearlo, su stock queda reservado y aparece en <b>Por retirar</b> para que lo preparen.',
@@ -589,10 +692,25 @@ PANTALLAS.pedido = async () => {
   <p id="npResumen" class="nota"></p>
   <button type="button" class="grande ancho" id="npCrear" disabled><b>Crear pedido</b><span>Queda en "Por retirar"</span></button>
   <datalist id="clientes"></datalist>`;
+  if (id) {
+    // Cargar el pedido y dejarlo listo para editar
+    const [p, ls] = await Promise.all([
+      consulta(sb.from('v_pedidos').select('*').eq('id', id).single()),
+      consulta(sb.from('v_pedido_lineas').select('*').eq('pedido_id', id)),
+    ]);
+    if (E.pantalla !== 'pedido' || E.ctx.np.editar !== id) return;
+    if (p.tipo !== 'pedido' || p.estado !== 'por_retirar') { ir('preparar', { id }, { reemplazar: true }); return; }
+    Object.assign(E.ctx.np, { destino: p.destino, cadena: p.cadena, cd: p.cd, cliente: p.cliente || '' });
+    ls.forEach((l) => { const i = app.querySelector(`[data-np="${l.producto_id}"][data-unidad="${l.unidad}"]`); if (i) i.value = l.cantidad; });
+    $('#npNota').value = p.nota || '';
+    $('#npEditando').innerHTML = `Editando <b>${esc(p.etiqueta)}</b>. Cambia lo que necesites y aprieta Guardar cambios. No se puede bajar una cantidad por debajo de lo ya pistoleado.`;
+    $('#npCrear').innerHTML = '<b>Guardar cambios</b><span>El pedido sigue en "Por retirar"</span>';
+    const t = $('#cab .titulo'); if (t) t.textContent = 'Editar pedido';
+  }
   pintarDestino();
   app.querySelectorAll('[data-np]').forEach((i) => { i.oninput = actualizarResumenPedido; });
   actualizarResumenPedido(); // muestra desde el inicio qué falta para habilitar "Crear pedido"
-  $('#npCrear').onclick = () => encolar(crearPedido);
+  $('#npCrear').onclick = () => encolar(id ? guardarEdicionPedido : crearPedido);
   const cl = await consulta(sb.from('v_clientes').select('*').order('ultimo', { ascending: false }).limit(200));
   const dl = $('#clientes'); if (dl) dl.innerHTML = cl.map((c) => `<option value="${esc(c.cliente)}">`).join('');
 };
@@ -637,6 +755,18 @@ async function crearPedido() {
       p_nota: $('#npNota').value.trim() || null });
     pitido(true); aviso(`${r.pedido.etiqueta} creado: ${resumenCant(r.pedido.cajas, r.pedido.unidades)}`, 'ok');
     ir('preparar', { id: r.pedido.id }, { reemplazar: true });
+  } catch (e) { $('#npCrear').disabled = false; throw e; }
+}
+async function guardarEdicionPedido() {
+  const np = E.ctx.np; const ls = lineasPedido(); if (!ls.length || !np.destino) return;
+  $('#npCrear').disabled = true;
+  try {
+    const r = await rpc('editar_pedido', { p_pedido: np.editar, p_destino: np.destino, p_lineas: ls,
+      p_cliente: np.destino === 'cliente' ? (np.cliente || '').trim() : null,
+      p_cadena: np.destino === 'supermercado' ? np.cadena : null, p_cd: np.destino === 'supermercado' && np.cadena === 'lider' ? np.cd : null,
+      p_nota: $('#npNota').value.trim() || null });
+    pitido(true); aviso(`${r.pedido.etiqueta} guardado: ${resumenCant(r.pedido.cajas, r.pedido.unidades)}`, 'ok');
+    volverAPantalla('preparar', { id: np.editar });
   } catch (e) { $('#npCrear').disabled = false; throw e; }
 }
 
@@ -1065,10 +1195,23 @@ PANTALLAS.ayuda = () => {
   <section class="tarjeta"><h3>Si me equivoco</h3><ul>
     <li>Justo después: toca <b>Deshacer</b> en la línea.</li>
     <li>Más tarde: entra al <b>Historial</b> y toca <b>Deshacer</b> en ese registro.</li>
-    <li>Un pedido o factura mal cargado: ábrelo en <b>Por retirar</b> y toca <b>Anular este pedido</b>.</li>
+    <li>Un pedido mal cargado: ábrelo en <b>Por retirar</b> y toca <b>Editar pedido</b> (o <b>Anular</b>). Una factura con la cadena equivocada: <b>Corregir cadena</b>.</li>
     <li>Un tambor mal anotado: en <b>Tambores</b>, usa <b>Corregir</b> o <b>Anular</b>.</li></ul></section>
-  <section class="tarjeta"><h3>Pedidos y facturas</h3>
-    <p>Al cargarlos, su stock queda <b>reservado</b> (no se puede vender dos veces), pero sigue en la bodega. Recién al apretar <b>Marcar retirado</b> sale del stock.</p></section>`;
+  <section class="tarjeta"><h3>Pedidos de Mercado Libre, web, clientes y encargos de Berni</h3><ol>
+    <li>Berni (o quien lo reciba) lo carga en <b>Nuevo pedido</b>, eligiendo a quién va: Mercado Libre, Creado en Chile, Berni (ventas web y lo que ella pida) o un cliente.</li>
+    <li>Aparece en <b>Por retirar</b>, con el número de pendientes en el menú. Ahí la Pipa lo abre y lo prepara pistoleando cada frasco o caja; la línea avanza y avisa si sobra o falta.</li>
+    <li>Cuando sale de la bodega (lo retira el courier, Berni o el cliente), se aprieta <b>Marcar retirado</b> y recién ahí se descuenta del stock.</li></ol>
+    <p class="chico">Las facturas de supermercado siguen el mismo camino, pero se cargan con <b>Subir factura</b>.</p></section>
+  <section class="tarjeta"><h3>Varios iguales de una vez</h3>
+    <p>En Envasar y al preparar un pedido, toca <b>×10</b>, <b>×12</b> u <b>Otra</b> y pistolea un solo frasco o caja: esa lectura cuenta por esa cantidad. Después vuelve sola a ×1.</p>
+    <p class="chico">500 g, 1 kg y baldes no se encajan en la app: sus cajas no tienen código y se cuentan solo por unidades.</p></section>
+  <section class="tarjeta"><h3>Avisos</h3>
+    <p>Si marcaste "No volver a mostrar" en un aviso (por ejemplo, al encajar) y quieres verlo de nuevo:</p>
+    <button type="button" class="sec" id="resetAvisos">Volver a mostrar los avisos</button></section>`;
+  $('#resetAvisos').onclick = () => {
+    try { Object.keys(localStorage).filter((k) => k.startsWith('no_mostrar_')).forEach((k) => localStorage.removeItem(k)); } catch { /* sin almacenamiento */ }
+    aviso('Listo: los avisos se vuelven a mostrar.', 'ok');
+  };
 };
 
 iniciar();
