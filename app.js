@@ -200,7 +200,8 @@ function encolar(fn) {
 
 // ───────── Pistola y registro de lecturas (con Deshacer) ─────────
 
-function htmlPistola(texto, extra = '') {
+// extra: va dentro del recuadro, sobre el campo (ej.: ×10). debajo: va fuera del recuadro, justo bajo él.
+function htmlPistola(texto, extra = '', debajo = '') {
   return `<div class="pistola">
     <label for="scan">${esc(texto)}</label>${extra}
     <div class="fila">
@@ -209,7 +210,7 @@ function htmlPistola(texto, extra = '') {
     </div>
     <ul class="sugerencias" id="sugerencias"></ul>
     <div class="estado" id="estadoScan"></div>
-  </div>
+  </div>${debajo}
   <div id="desc"></div>
   <ul id="log" class="log"></ul>`;
 }
@@ -627,9 +628,9 @@ PANTALLAS.preparar = async ({ id }) => {
     'Si vas encajando frascos sueltos mientras armas, marca «Estoy armando cajas nuevas»: cada caja que pistoleas se encaja y se suma al pedido de una vez.',
     'Si lo armaste sin pistolear, toca <b>Marcar armado sin pistolear</b>. Con todo armado pasa a «Por retirar».',
     'Cuando sale de la bodega, toca <b>Marcar retirado</b> (solo se puede con el pedido armado).',
-  ]) + `${htmlPistola('Pistolea cada frasco o caja de este pedido', htmlMultiplicador()
-      + '<label class="check chico oculto" id="lblCajasNuevas"><input type="checkbox" id="cajasNuevas"> Estoy armando cajas nuevas con frascos sueltos: encajarlas al pistolearlas</label>')}
-  <section class="tarjeta"><table class="tabla" id="lineas"></table>
+  ]) + `${htmlPistola('Pistolea cada frasco o caja de este pedido', htmlMultiplicador(),
+      '<label class="check chico oculto" id="lblCajasNuevas"><input type="checkbox" id="cajasNuevas"> Estoy armando cajas nuevas con frascos sueltos: encajarlas al pistolearlas</label>')}
+  <section class="tarjeta"><h3>Lo que lleva el pedido</h3><table class="tabla" id="lineas"></table>
     <div class="fila-botones"><button type="button" class="sec mini oculto" id="btnArmado">Marcar armado sin pistolear</button></div></section>
   <div class="separador-retiro"><button type="button" class="grande ancho" id="btnRetirar"><b>Marcar retirado</b><span>Salió de la bodega: se descuenta del stock</span></button></div>
   <div class="fila-botones"><button type="button" class="sec mini oculto" id="btnEditarPed">Editar pedido</button><button type="button" class="sec mini oculto" id="btnCadena">Corregir cadena</button>

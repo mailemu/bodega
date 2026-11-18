@@ -18,8 +18,8 @@ h2 { font-size: 22px; } h3 { font-size: 18px; margin-top: 0; }
 .quien { display: flex; gap: 10px; align-items: center; font-size: 14px; white-space: nowrap; }
 .enlace { background: none; border: 0; color: inherit; text-decoration: underline; font: inherit; padding: 0; min-height: 0; cursor: pointer; }
 
-main { width: 100%; margin: 0; padding: 14px 16px 120px; }
-@media (min-width: 900px) { main { padding: 18px 28px 120px; } }
+main { width: 100%; margin: 0; padding: 16px 20px 120px; }
+@media (min-width: 900px) { main { padding: 24px 6% 120px; } }
 button { font: inherit; border-radius: 12px; border: 0; background: var(--petroleo); color: #fff; padding: 12px 16px; min-height: 48px; cursor: pointer; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 button.sec { background: #fff; color: var(--petroleo); border: 1.5px solid var(--petroleo); }
@@ -92,7 +92,7 @@ a.atajo { color: var(--petroleo); font-weight: 700; text-decoration: underline; 
 
 /* Pedido: retiro separado del armado */
 .separador-retiro { margin-top: 32px; padding-top: 18px; border-top: 2px dashed var(--borde); }
-#lblCajasNuevas { margin: 8px 0 0; color: var(--suave); font-size: 14px; }
+#lblCajasNuevas { margin: 18px 4px 22px; color: var(--suave); font-size: 14px; }
 #lblCajasNuevas input { width: 18px; height: 18px; }
 .grupo.alerta { color: var(--alerta); background: var(--alerta-fondo); border: 1.5px solid var(--miel); border-radius: 10px; padding: 6px 10px; letter-spacing: .03em; }
 
