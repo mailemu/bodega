@@ -693,7 +693,9 @@ function pintarPedido() {
   $('#btnCadena').classList.toggle('oculto', !abierto || p.destino !== 'supermercado');
   $('#btnAnularPed').textContent = p.tipo === 'factura' ? 'Anular esta factura' : 'Anular este pedido';
   // Packs pedidos: ya están sumados en la tabla; esto dice cómo juntarlos al embalar
-  $('#packsPed').innerHTML = (p.packs || []).length ? `<p class="packs-pedido">🎁 <b>Packs:</b> ${esc(textoPacks(p.packs))}<br><span class="chico">Ya están sumados abajo, frasco por frasco. Júntalos así al embalar.</span></p>` : '';
+  $('#packsPed').innerHTML = (p.destino === 'creado_en_chile' ? `<p class="recordatorio">📌 ${esc(RECORDATORIO_CECH)}</p>` : '')
+    + ((p.packs || []).length ? `<p class="packs-pedido">🎁 <b>Packs:</b> ${esc(textoPacks(p.packs))}<br><span class="chico">Ya están sumados abajo, frasco por frasco. Júntalos así al embalar.</span></p>` : '')
+    + ((p.reparto || []).length ? `<h4>Cuánto va a cada tienda</h4>${htmlReparto(p.reparto)}<p class="chico">La tabla de abajo es el total. Sepáralo así al embalar${p.reparto.some((t) => esPortal(t.tienda)) ? '; lo marcado con ⚠ lleva la etiqueta de Falabella' : ''}.</p>` : '');
   $('#lineas').innerHTML = '<tr><th>Producto</th><th class="num">Pide</th><th class="num">Listo</th><th></th></tr>' + ls.map((l) =>
     `<tr class="${l.faltan === 0 ? 'ok' : ''}"><td>${esc(l.producto)}</td><td class="num">${plural(l.cantidad, l.unidad === 'caja' ? 'caja' : 'unidad', l.unidad === 'caja' ? 'cajas' : 'unidades')}</td><td class="num">${l.preparado}</td>
      <td>${abierto && !tieneCodigo(l.producto_id, l.unidad) && l.faltan > 0 ? `<button type="button" class="mini" data-linea="${l.id}">+1</button>` : ''}</td></tr>`).join('');
@@ -757,114 +759,196 @@ async function anularPedido(id) {
 }
 
 // ───────── Packs ─────────
-// Combinaciones que se venden como un solo producto (web y Mercado Libre). Al cargar el pedido se desarman en frascos
-// y se suman (regla del 10-11-2026); el pedido guarda además qué packs se pidieron, para mostrarlo y editarlo.
-// La cajita "Pack Variedades / Sabores 3 × 300 g" es un producto propio (con código) y va como tal.
+// Todos los packs que se venden: los de la web (mailemu.cl) y los de las publicaciones de Mercado Libre, sin extras
+// (revisado el 19-11-2026). Al cargar el pedido se desarman en frascos y se suman (regla del 10-11-2026); el pedido guarda
+// además qué packs lleva, para que la Pipa los junte al embalar. La cajita Sabores 3 × 300 g es un producto propio (con código).
 const PRODUCTO_DE = {
   ulmo: { 300: 'u300', 500: 'u500', 550: 'u550', 1000: 'u1000', 5600: 'balde_u' },
   bosque_nativo: { 300: 'bn300', 500: 'bn500', 550: 'bn550', 1000: 'bn1000', 5600: 'balde_bn' },
-  quillay: { 300: 'q300', 550: 'q550', 1000: 'q1000', 5600: 'balde_q' },
+  quillay: { 300: 'q300', 500: 'q500', 550: 'q550', 1000: 'q1000', 5600: 'balde_q' },
 };
-const COMBOS = [[1, 1, 0], [1, 0, 1], [0, 1, 1], [1, 2, 0], [2, 1, 0], [2, 2, 0], [1, 1, 1], [2, 2, 2]]; // [Ulmo, Bosque Nativo, Quillay]
+const CORTO = { ulmo: 'Ulmo', bosque_nativo: 'Bosque Nativo', quillay: 'Quillay' };
 const FORMATOS_PACK = [[300, '300 g'], [500, '500 g'], [550, '550 g'], [1000, '1 kg']];
-const combosDe = (g) => (g === 500 ? [[1, 1, 0], [2, 2, 0]] : g === 300 ? COMBOS.filter((c) => c.join() !== '1,1,1') : COMBOS);
-const PACKS = [{ id: 'cajita', gramos: 300, nombre: 'Pack Sabores 3 × 300 g (cajita de regalo)', items: [{ producto: 'pack', cantidad: 1 }] }];
-FORMATOS_PACK.forEach(([g, etiqueta]) => combosDe(g).forEach(([u, b, q]) => {
-  const partes = [u && `${u} Ulmo`, b && `${b} Bosque Nativo`, q && `${q} Quillay`].filter(Boolean);
-  PACKS.push({ id: `${g}-${u}-${b}-${q}`, gramos: g, nombre: `${partes.join(' + ')} · ${etiqueta}`,
-    items: [['ulmo', u], ['bosque_nativo', b], ['quillay', q]].filter(([, n]) => n).map(([v, n]) => ({ producto: PRODUCTO_DE[v][g], cantidad: n })) });
-}));
+// Mezclas [Ulmo, Bosque Nativo, Quillay]. Web: 8 por formato en 300 g (la 1-1-1 es la cajita), 550 g y 1 kg. Meli: Mix 4 Un. 500 g.
+const MEZCLAS = { 300: [[1, 1, 0], [1, 0, 1], [0, 1, 1], [1, 2, 0], [2, 1, 0], [2, 2, 0], [2, 2, 2]],
+  500: [[2, 2, 0]],
+  550: [[1, 1, 0], [1, 0, 1], [0, 1, 1], [1, 2, 0], [2, 1, 0], [2, 2, 0], [1, 1, 1], [2, 2, 2]],
+  1000: [[1, 1, 0], [1, 0, 1], [0, 1, 1], [1, 2, 0], [2, 1, 0], [2, 2, 0], [1, 1, 1], [2, 2, 2]] };
+// Packs de una variedad (solo Mercado Libre): cuántos frascos por pack
+const UNA_VARIEDAD = { ulmo: { 500: [3, 4, 10], 550: [3, 5, 12], 1000: [3, 5, 10] },
+  bosque_nativo: { 500: [3, 4, 10], 550: [3, 5, 12], 1000: [3, 5, 10] }, quillay: { 1000: [3] } };
+const PACKS = [{ id: 'cajita', gramos: 300, nombre: 'Pack Sabores 3 × 300 g (cajita de regalo)', corto: 'Cajita Sabores (1 Ulmo + 1 Bosque Nativo + 1 Quillay)', items: [{ producto: 'pack', cantidad: 1 }] }];
+FORMATOS_PACK.forEach(([g, etiqueta]) => {
+  MEZCLAS[g].forEach(([u, b, q]) => {
+    const corto = [u && `${u} Ulmo`, b && `${b} Bosque Nativo`, q && `${q} Quillay`].filter(Boolean).join(' + ');
+    PACKS.push({ id: `${g}-${u}-${b}-${q}`, gramos: g, corto, nombre: `${corto} · ${etiqueta}`, mezcla: true,
+      items: [['ulmo', u], ['bosque_nativo', b], ['quillay', q]].filter(([, n]) => n).map(([v, n]) => ({ producto: PRODUCTO_DE[v][g], cantidad: n })) });
+  });
+  Object.entries(UNA_VARIEDAD).forEach(([v, porG]) => (porG[g] || []).forEach((n) => {
+    PACKS.push({ id: `${g}-x${n}-${v}`, gramos: g, corto: `${n} ${CORTO[v]}`, nombre: `Pack ${n} ${CORTO[v]} · ${etiqueta}`, items: [{ producto: PRODUCTO_DE[v][g], cantidad: n }] });
+  }));
+});
 const packPorId = (id) => PACKS.find((p) => p.id === id);
 const textoPacks = (packs) => (packs || []).map((x) => `${x.cantidad} × ${x.nombre}`).join(' · ');
 
-// ───────── Leer una venta de Mercado Libre ─────────
-// Del listado de ventas se copia: título de la publicación, atributos y "N unidad(es)". Patrones de los títulos de Mailemu:
-// "Pack 3 Un. Miel Pura De Ulmo 1kg" (3 iguales) · "Pack De Miel Pura: 1 Ulmo Y 1 Bosque Nativo 550gr" (mezcla escrita) ·
-// "Pack 3 Un. Miel Variedades Ulmo, Bosque Nativo, Quillay 1kg" (se reparte) · "Pack Mix 4 Un. … 500gr" (Ulmo y BN por mitad) ·
-// "Pack Sabores … 300gr" (cajita de regalo).
-function interpretarTituloML(titulo, attrs, unidades) {
-  const n = norm(`${titulo} ${attrs}`);
+// ───────── Reconocer productos por su nombre (Mercado Libre, Creado en Chile) ─────────
+// Devuelve { pack, cantidad } o { producto, cantidad } por cada unidad pedida, o { motivo } si no se entiende.
+function reconocerNombre(texto) {
+  const n = norm(texto);
   let g = null;
-  if (/balde|5,6\s?kg|5\.6\s?kg/.test(n)) g = 5600;
-  else if (/\b1kg\b|\b1000g/.test(n)) g = 1000;
+  if (/balde|5[,.]6\s?kg/.test(n)) g = 5600;
+  else if (/\b1kg\b|\b1000\s?g/.test(n)) g = 1000;
   else { const m = n.match(/\b(300|500|550)\s?(g|gr|grs)\b/); if (m) g = Number(m[1]); }
-  const r = { titulo, unidades, ok: false, lineas: [], pack: null };
-  if (/sabores/.test(n) && g === 300) { r.ok = true; r.pack = 'cajita'; r.lineas = [{ producto: 'pack', cantidad: unidades }]; return r; }
-  if (!g) { r.motivo = 'No se reconoce el formato (300 g, 500 g, 550 g, 1 kg o balde).'; return r; }
+  if (/sabores|regalo/.test(n) && (g === 300 || !g)) return { pack: 'cajita' };
+  if (!g) return { motivo: 'No se reconoce el formato (300 g, 500 g, 550 g, 1 kg o balde).' };
   let N = 1;
-  const mN = n.match(/pack\s*(?:mix\s*)?(\d+)\s*u/) || n.match(/pack\s*x\s*(\d+)/) || n.match(/\b(\d+)\s*un\b/);
+  const mN = n.match(/pack\s*(?:mix\s*)?(\d+)\s*u/) || n.match(/pack\s*x\s*(\d+)/);
   if (mN) N = Number(mN[1]);
-  const VARS = [['ulmo', /ulmo/], ['bosque_nativo', /bosque nativo|\bbn\b/], ['quillay', /quillay/]];
-  const vars = VARS.filter(([, re]) => re.test(n)).map(([v]) => v);
+  const VARS = [['ulmo', /ulmo/], ['bosque_nativo', /bosque nativo/], ['quillay', /quillay/]];
+  let vars = VARS.filter(([, re]) => re.test(n)).map(([v]) => v);
+  if (!vars.length && /multifloral/.test(n)) vars = ['bosque_nativo']; // "Miel Multifloral" = Bosque Nativo
   const comp = {};
-  [['ulmo', /(\d+)\s*(?:frascos?\s*)?(?:de\s*)?ulmo/], ['bosque_nativo', /(\d+)\s*(?:frascos?\s*)?(?:de\s*)?bosque nativo/], ['quillay', /(\d+)\s*(?:frascos?\s*)?(?:de\s*)?quillay/]]
+  [['ulmo', /(\d+)\s*(?:de\s*)?ulmo/], ['bosque_nativo', /(\d+)\s*(?:de\s*)?bosque nativo/], ['quillay', /(\d+)\s*(?:de\s*)?quillay/]]
     .forEach(([v, re]) => { const m = n.match(re); if (m) comp[v] = Number(m[1]); });
   let porVar = {};
   if (Object.keys(comp).length) porVar = comp;
-  else if (!vars.length && /mix/.test(n) && g === 500) porVar = { ulmo: N / 2, bosque_nativo: N / 2 };
+  else if (!vars.length && /mix/.test(n)) porVar = { ulmo: N / 2, bosque_nativo: N / 2 };
   else if (vars.length === 1) porVar = { [vars[0]]: N };
   else if (vars.length > 1) {
-    if (N % vars.length) { r.motivo = `No se puede repartir ${N} frascos entre ${vars.length} variedades.`; return r; }
+    if (N % vars.length) return { motivo: `No se puede repartir ${N} frascos entre ${vars.length} variedades.` };
     vars.forEach((v) => { porVar[v] = N / vars.length; });
-  } else { r.motivo = 'No dice la variedad. Agrégalo a mano.'; return r; }
-  if (g === 300 && porVar.ulmo === 1 && porVar.bosque_nativo === 1 && porVar.quillay === 1) { // 3 × 300 g surtido = la cajita
-    r.ok = true; r.pack = 'cajita'; r.lineas = [{ producto: 'pack', cantidad: unidades }]; return r;
-  }
-  for (const [v, c] of Object.entries(porVar)) {
-    const prod = PRODUCTO_DE[v][g];
-    if (!prod || !Number.isInteger(c)) { r.motivo = `No existe ${VARIEDADES[v]} en ese formato.`; return r; }
-    r.lineas.push({ producto: prod, cantidad: c * unidades });
-  }
-  // Si la mezcla es uno de los packs, se carga como pack (la Pipa ve cómo armarlo)
-  const id = `${g}-${porVar.ulmo || 0}-${porVar.bosque_nativo || 0}-${porVar.quillay || 0}`;
-  if (Object.keys(porVar).length > 1 && packPorId(id)) r.pack = id;
-  r.ok = true;
-  return r;
+  } else return { motivo: 'No dice la variedad.' };
+  const u = porVar.ulmo || 0; const b = porVar.bosque_nativo || 0; const q = porVar.quillay || 0;
+  if (g === 300 && u === 1 && b === 1 && q === 1) return { pack: 'cajita' };
+  const ent = Object.entries(porVar);
+  if (ent.length > 1) return packPorId(`${g}-${u}-${b}-${q}`) ? { pack: `${g}-${u}-${b}-${q}` } : { motivo: 'Esa mezcla no es uno de los packs.' };
+  const [v, c] = ent[0];
+  if (c === 1) return PRODUCTO_DE[v][g] && E.productos.has(PRODUCTO_DE[v][g]) ? { producto: PRODUCTO_DE[v][g] } : { motivo: `No existe ${CORTO[v]} en ese formato.` };
+  return packPorId(`${g}-x${c}-${v}`) ? { pack: `${g}-x${c}-${v}` } : { motivo: `No hay pack de ${c} ${CORTO[v]} en ese formato.` };
 }
 
-function leerVentaML(texto) {
-  const lineas = texto.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-  const items = []; let titulo = null; let attrs = '';
-  lineas.forEach((l) => {
-    const mU = l.match(/^(\d+)\s+unidad(es)?/i);
-    if (mU) { if (titulo) items.push(interpretarTituloML(titulo, attrs, Number(mU[1]))); titulo = null; attrs = ''; return; }
-    if (/^sku/i.test(l) || /^#/.test(l)) return;
-    // Atributos ("Tipo de envase: Frasco | Formato de la miel: Crema"): van con el título anterior
-    if (titulo && (/\|/.test(l) || /^(tipo|sabor|variedad|formato|envase|contenido|color)\b[^:]*:/i.test(l))) { attrs += ` ${l}`; return; }
-    if (/\b(miel|pack|balde)\b/i.test(l)) { if (l !== titulo) { titulo = l; attrs = ''; } return; }
+// ───────── Inbound de Mercado Libre (PDF del envío a Full) ─────────
+// Cada producto trae un Código ML fijo; se reconoce por ese código y, si es nuevo, por el título de la publicación.
+const CODIGOS_ML = {
+  VZQG50881: { producto: 'u1000' }, DSNL51685: { producto: 'u550' }, CYGP89145: { producto: 'u500' },
+  PKQI52303: { producto: 'bn1000' }, SHSQ53752: { producto: 'bn550' }, ZEAO88331: { producto: 'bn500' },
+  FTNE71476: { producto: 'q1000' }, DTCY24730: { producto: 'q550' },
+  FKXI51659: { producto: 'balde_u' }, NIFA43456: { producto: 'balde_bn' }, GFLW51072: { producto: 'balde_bn' }, BYWR76367: { producto: 'balde_q' },
+  WIPD86402: { pack: 'cajita' },
+  FCOM51188: { pack: '1000-x3-ulmo' }, DEID52728: { pack: '1000-x3-bosque_nativo' }, NWVE17540: { pack: '1000-x3-quillay' },
+  ZUFA42755: { pack: '1000-1-1-0' }, CHBW08978: { pack: '1000-1-1-0' }, REAB98614: { pack: '1000-0-1-1' },
+  TVKG17160: { pack: '1000-1-1-1' }, QRSG64564: { pack: '1000-2-2-0' },
+  RHLZ96255: { pack: '550-1-1-0' }, PDSG24753: { pack: '550-1-1-1' },
+};
+const cargarScript = (src) => new Promise((ok, mal) => {
+  if (document.querySelector(`script[src="${src}"]`)) { ok(); return; }
+  const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => mal(new Error('No se pudo cargar el lector. Revisa la conexión.')); document.head.appendChild(s);
+});
+async function leerInboundML(archivo) {
+  const base = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+  await cargarScript(base + 'pdf.min.js');
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = base + 'pdf.worker.min.js';
+  const pdf = await window.pdfjsLib.getDocument({ data: await archivo.arrayBuffer() }).promise;
+  const items = []; let envio = null;
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const tc = await (await pdf.getPage(p)).getTextContent();
+    const tx = tc.items.filter((i) => i.str.trim()).map((i) => ({ s: i.str.trim(), x: i.transform[4], y: i.transform[5] }));
+    const m = tx.map((t) => t.s).join(' ').match(/Env[ií]o\s*#\s*(\d+)/); if (m) envio = m[1];
+    const cab = tx.find((t) => /^UNIDADES$/i.test(t.s)); if (!cab) continue;
+    const nums = tx.filter((t) => /^\d+$/.test(t.s) && Math.abs(t.x - cab.x) < 45 && t.y < cab.y);
+    const codigos = tx.filter((t) => /C[oó]digo ML:/i.test(t.s)).sort((a, b) => b.y - a.y);
+    codigos.forEach((c, k) => {
+      const cod = (c.s.match(/C[oó]digo ML:\s*([A-Z0-9]+)/i) || [])[1] || (tx.find((t) => t.y === c.y && t.x > c.x && /^[A-Z]{4}\d{5}$/.test(t.s)) || {}).s;
+      const abajo = codigos[k + 1] ? codigos[k + 1].y : -1;
+      const titulo = tx.filter((t) => t.y < c.y && t.y > abajo && t.x < cab.x - 10 && !/^(SKU|SUPERMERCADO|C[oó]digo|N\/A|-)/i.test(t.s) && !/^[A-Z0-9-]{4,}$/.test(t.s))
+        .sort((a, b) => b.y - a.y || a.x - b.x).map((t) => t.s).join(' ').replace(/\b\d{8,}\b|SKU:\s*\S+/g, '').replace(/\s+-\s*$/, '').replace(/\s+/g, ' ').trim();
+      const num = nums.filter((t) => t.y <= c.y + 6 && t.y > abajo).sort((a, b) => Math.abs(a.y - c.y) - Math.abs(b.y - c.y))[0];
+      items.push({ codigo: cod, titulo, unidades: num ? Number(num.s) : 0 });
+    });
+  }
+  return { envio, items: items.map((it) => ({ ...it, ...(CODIGOS_ML[it.codigo] || reconocerNombre(it.titulo)), porCodigo: !!CODIGOS_ML[it.codigo] })) };
+}
+
+// ───────── Excel de Creado en Chile ─────────
+// Sirven dos formatos: la tabla de reposición (productos en filas, tiendas en columnas) y el reporte por orden
+// (columnas Producto, Localidad o Sucursal, Cantidad).
+const RECORDATORIO_CECH = 'Los pedidos de Creado en Chile deben ir con palito y separadores. Y las que van a «Portal LD» tienen que ir con la etiqueta de Falabella tapando el código de barras de Mailemu.';
+const esPortal = (tienda) => /portal/i.test(tienda);
+async function leerExcelCech(archivo) {
+  await cargarScript('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
+  const wb = window.XLSX.read(await archivo.arrayBuffer(), { type: 'array' });
+  const filas = window.XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })
+    .map((f) => f.map((c) => String(c).trim())).filter((f) => f.some((c) => c));
+  const celdas = []; // [nombre del producto, tienda, cantidad]
+  const iCab = filas.findIndex((f) => f.some((c) => /^producto$/i.test(c)) && f.some((c) => /^cantidad$/i.test(c)));
+  if (iCab >= 0) {
+    const cab = filas[iCab].map((c) => norm(c));
+    const cP = cab.indexOf('producto'); const cC = cab.indexOf('cantidad');
+    const cL = cab.indexOf('localidad'); const cS = cab.indexOf('sucursal');
+    filas.slice(iCab + 1).forEach((f) => celdas.push([f[cP], (cL >= 0 && f[cL]) || (cS >= 0 && f[cS]) || 'Creado en Chile', Number(String(f[cC]).replace(',', '.'))]));
+  } else {
+    // Tabla: la fila de tiendas es la primera que tiene varias celdas de texto después de la primera columna
+    const iT = filas.findIndex((f) => f.slice(1).filter((c) => c && isNaN(Number(c))).length >= 1);
+    if (iT < 0) throw new Error('No encontré las tiendas en el Excel.');
+    const tiendas = filas[iT];
+    filas.slice(iT + 1).forEach((f) => tiendas.forEach((t, j) => {
+      if (j === 0 || !t || /^total/i.test(t) || /^total/i.test(f[0])) return;
+      celdas.push([f[0], t, Number(String(f[j]).replace(',', '.'))]);
+    }));
+  }
+  const reparto = new Map(); const malos = new Map();
+  celdas.forEach(([nombre, tienda, cant]) => {
+    if (!nombre || !(cant > 0) || /devoluci/i.test(tienda)) return;
+    const r = reconocerNombre(nombre);
+    if (r.motivo) { malos.set(nombre, r.motivo); return; }
+    const producto = r.pack ? packPorId(r.pack).items[0].producto : r.producto;
+    const veces = r.pack ? packPorId(r.pack).items[0].cantidad : 1;
+    if (r.pack && packPorId(r.pack).items.length > 1) { malos.set(nombre, 'Es un pack mezclado: agrégalo en Packs.'); return; }
+    const t = tienda.replace(/^\d+\.\s*/, '').trim();
+    if (!reparto.has(t)) reparto.set(t, new Map());
+    const m = reparto.get(t); m.set(producto, (m.get(producto) || 0) + cant * veces);
   });
-  if (titulo) items.push(interpretarTituloML(titulo, attrs, 1)); // sin "N unidad(es)": 1
-  const ventas = [...new Set((texto.match(/#\s?\d{12,}/g) || []).map((s) => s.replace(/\D/g, '')))];
-  return { items, ventas, full: /\bfull\b/i.test(texto) };
+  return { reparto: [...reparto.entries()].map(([tienda, m]) => ({ tienda, lineas: [...m.entries()].map(([producto, cantidad]) => ({ producto, cantidad })) })),
+    malos: [...malos.entries()] };
+}
+// Tabla del reparto por tienda (se usa al cargar y al armar)
+function htmlReparto(reparto) {
+  const prods = [...new Set(reparto.flatMap((t) => t.lineas.map((l) => l.producto)))].map((id) => E.productos.get(id) || { id, nombre: id }).sort(ordenProductos);
+  const cant = (t, id) => (t.lineas.find((l) => l.producto === id) || {}).cantidad || '';
+  return `<div class="tabla-scroll"><table class="tabla compacta reparto"><tr><th>Producto</th>${reparto.map((t) => `<th class="num${esPortal(t.tienda) ? ' portal' : ''}">${esc(t.tienda)}${esPortal(t.tienda) ? ' ⚠' : ''}</th>`).join('')}<th class="num">Total</th></tr>
+    ${prods.map((p) => `<tr><td><i class="punto ${CLASE_VARIEDAD[p.variedad] || ''}"></i>${esc(p.nombre)}</td>${reparto.map((t) => `<td class="num${esPortal(t.tienda) ? ' portal' : ''}">${cant(t, p.id)}</td>`).join('')}
+      <td class="num"><b>${reparto.reduce((a, t) => a + (Number(cant(t, p.id)) || 0), 0)}</b></td></tr>`).join('')}</table></div>`;
 }
 
 // ───────── Nuevo pedido ─────────
 
 // Nuevo pedido, o edición de uno existente si viene { id }
 PANTALLAS.pedido = async ({ id } = {}) => {
-  E.ctx.np = { destino: null, cadena: null, cd: null, editar: id || null };
+  E.ctx.np = { destino: null, cadena: null, cd: null, editar: id || null, reparto: null };
   const productos = [...E.productos.values()].filter((p) => p.activo && p.id !== 'pack').sort(ordenProductos);
   const filaProd = (p) => `<tr><td><i class="punto ${CLASE_VARIEDAD[p.variedad] || ''}"></i>${esc(p.nombre)}</td>
       <td class="num">${p.caja_controlada ? `<input type="number" min="0" inputmode="numeric" data-np="${p.id}" data-unidad="caja" placeholder="cajas" aria-label="Cajas de ${esc(p.nombre)}">` : '<span class="chico">—</span>'}</td>
       <td class="num"><input type="number" min="0" inputmode="numeric" data-np="${p.id}" data-unidad="unidad" placeholder="${unidadDe(p)[1]}" aria-label="Unidades de ${esc(p.nombre)}"></td></tr>`;
-  const filaPack = (k) => `<tr><td>${esc(k.nombre.replace(/ · .*$/, ''))}</td>
+  const filaPack = (k) => `<tr><td>${esc(k.corto)}</td>
       <td class="num"><input type="number" min="0" inputmode="numeric" data-pack="${k.id}" placeholder="packs" aria-label="Cantidad de ${esc(k.nombre)}"></td></tr>`;
-  app.innerHTML = (id ? '<p class="aviso-inicio" id="npEditando">Cargando el pedido…</p>' : '') + guia('pedido_v2', [
+  const bloque = (g, etiqueta) => {
+    const mez = PACKS.filter((k) => k.gramos === g && k.mezcla); const una = PACKS.filter((k) => k.gramos === g && !k.mezcla && k.id !== 'cajita');
+    return `<div><h4>${etiqueta}</h4><table class="tabla compacta">${g === 300 ? filaPack(PACKS[0]) : ''}${mez.map(filaPack).join('')}
+      ${una.length ? `<tr><th colspan="2" class="sub">Una variedad</th></tr>${una.map(filaPack).join('')}` : ''}</table></div>`;
+  };
+  app.innerHTML = (id ? '<p class="aviso-inicio" id="npEditando">Cargando el pedido…</p>' : '') + guia('pedido_v3', [
     'Elige a quién va el pedido.',
-    'Escribe las cantidades en <b>Productos</b> (frascos o cajas) y en <b>Packs</b>: los packs se convierten solos en frascos y abajo ves el total sumado. Las secciones se pueden cerrar sin perder lo escrito.',
-    'Para una venta de Mercado Libre, cópiala desde el listado de ventas y pégala en «Pegar venta de Mercado Libre»: la app reconoce lo que se pidió.',
+    'Para <b>Mercado Libre</b>, sube el PDF del envío a Full (el inbound): la app reconoce los productos y packs y los agrega.',
+    'Para <b>Creado en Chile</b>, sube su Excel: la app suma lo de todas las tiendas y guarda cuánto va a cada una.',
+    'También puedes escribir las cantidades en <b>Productos</b> y en <b>Packs</b>. Los packs se convierten solos en frascos y abajo ves el total. Las secciones se pueden cerrar sin perder lo escrito.',
     'Crear el pedido solo lo <b>carga</b>: queda pendiente en <b>Pedidos</b>, por armar, y su stock queda apartado.',
   ]) + `<section class="tarjeta"><h3>¿A quién va?</h3><div id="npDestino"></div></section>
-  <details class="tarjeta desplegable" id="secML"><summary><b>📋 Pegar venta de Mercado Libre</b></summary>
-    <p class="nota">En Mercado Libre → Ventas, selecciona la venta (título, atributos y «1 unidad») y cópiala. Pégala aquí.</p>
-    <textarea id="mlTexto" rows="5" placeholder="Pega aquí la venta…"></textarea>
-    <div id="mlRes"></div></details>
+  <div id="npArchivo"></div>
   <details class="tarjeta desplegable" id="secProd" open><summary><b>Productos</b> <span class="chico" id="sumProd"></span></summary>
     <table class="tabla compacta"><tr><th>Producto</th><th class="num">Cajas</th><th class="num">Unidades</th></tr>${productos.map(filaProd).join('')}</table></details>
   <details class="tarjeta desplegable" id="secPacks"><summary><b>Packs</b> <span class="chico" id="sumPacks"></span></summary>
-    ${filaPack(PACKS[0]).replace('<tr>', '<table class="tabla compacta"><tr>')}</table>
-    <div class="packs-grid">${FORMATOS_PACK.map(([g, etiqueta]) => `<div><h4>${etiqueta}</h4><table class="tabla compacta">${PACKS.filter((k) => k.gramos === g && k.id !== 'cajita').map(filaPack).join('')}</table></div>`).join('')}</div></details>
-  <section class="tarjeta"><label>Nota (opcional)<input id="npNota" placeholder="Ej.: N.º de venta de Mercado Libre"></label></section>
+    <div class="packs-grid">${FORMATOS_PACK.map(([g, e]) => bloque(g, e)).join('')}</div></details>
+  <section class="tarjeta"><label>Nota (opcional)<input id="npNota" placeholder="Ej.: n.º de envío a Full"></label></section>
   <section class="tarjeta total-pedido"><h3>Total del pedido</h3><div id="npTotal"></div><p id="npResumen" class="nota"></p></section>
   <button type="button" class="grande ancho" id="npCrear" disabled><b>Crear pedido</b><span>Queda pendiente en Pedidos, por armar</span></button>
   <datalist id="clientes"></datalist>`;
@@ -876,7 +960,7 @@ PANTALLAS.pedido = async ({ id } = {}) => {
     ]);
     if (E.pantalla !== 'pedido' || E.ctx.np.editar !== id) return;
     if (p.tipo !== 'pedido' || p.estado !== 'por_retirar') { ir('preparar', { id }, { reemplazar: true }); return; }
-    Object.assign(E.ctx.np, { destino: p.destino, cadena: p.cadena, cd: p.cd, cliente: p.cliente || '' });
+    Object.assign(E.ctx.np, { destino: p.destino, cadena: p.cadena, cd: p.cd, cliente: p.cliente || '', reparto: p.reparto || null });
     const deLosPacks = new Map();
     (p.packs || []).forEach((x) => {
       const k = packPorId(x.pack); const i = app.querySelector(`[data-pack="${x.pack}"]`); if (!k || !i) return;
@@ -896,38 +980,72 @@ PANTALLAS.pedido = async ({ id } = {}) => {
     $('#npCrear').innerHTML = '<b>Guardar cambios</b><span>El pedido sigue pendiente en Pedidos</span>';
     const t = $('#cab .titulo'); if (t) t.textContent = 'Editar pedido';
   }
-  pintarDestino();
+  pintarDestino(); pintarArchivo();
   app.querySelectorAll('[data-np], [data-pack]').forEach((i) => { i.oninput = actualizarResumenPedido; });
-  $('#mlTexto').oninput = () => pintarVentaML();
   actualizarResumenPedido();
   $('#npCrear').onclick = () => encolar(id ? guardarEdicionPedido : crearPedido);
   const cl = await consulta(sb.from('v_clientes').select('*').order('ultimo', { ascending: false }).limit(200));
   const dl = $('#clientes'); if (dl) dl.innerHTML = cl.map((c) => `<option value="${esc(c.cliente)}">`).join('');
 };
 
-// Muestra lo reconocido de la venta pegada y permite agregarlo al pedido
-function pintarVentaML() {
-  const c = $('#mlRes'); const texto = $('#mlTexto').value;
-  if (!texto.trim()) { c.innerHTML = ''; return; }
-  const v = leerVentaML(texto); E.ctx.ventaML = v;
-  const nombre = (id) => (E.productos.get(id) || {}).nombre || id;
-  c.innerHTML = (v.items.length ? `<ul class="ml-items">${v.items.map((it) => `<li class="${it.ok ? 'ok' : 'mal'}">
-      <span class="chico">${esc(it.titulo)} · ${plural(it.unidades, 'unidad', 'unidades')}</span><br>
-      ${it.ok ? `→ ${it.pack ? `<b>${it.unidades} × ${esc(packPorId(it.pack).nombre)}</b>` : it.lineas.map((l) => `<b>${l.cantidad} ${esc(nombre(l.producto))}</b>`).join(' + ')}` : `✗ ${esc(it.motivo)}`}</li>`).join('')}</ul>`
-    : '<p class="error">No encontré ninguna publicación de miel en lo pegado.</p>')
-    + (v.full ? '<p class="alerta-texto">⚠ Esta venta es <b>Full</b>: sale del centro de Mercado Libre, no de la bodega. Normalmente no se carga como pedido.</p>' : '')
-    + (v.items.some((it) => it.ok) ? '<div class="fila-botones"><button type="button" id="mlAgregar">Agregar al pedido</button></div>' : '');
-  const b = $('#mlAgregar');
+// Suma una cantidad a un campo del pedido
+function sumarCampo(sel, n) { const i = app.querySelector(sel); if (i) i.value = (parseInt(i.value, 10) || 0) + n; return !!i; }
+function agregarNota(texto) { const nota = $('#npNota'); if (!nota.value.includes(texto)) nota.value = `${nota.value ? nota.value + ' · ' : ''}${texto}`; }
+
+// Caja para subir el archivo según el destino: inbound (PDF) de Mercado Libre o Excel de Creado en Chile
+function pintarArchivo() {
+  const np = E.ctx.np; const c = $('#npArchivo'); if (!c) return;
+  const ml = np.destino === 'mercado_libre'; const cech = np.destino === 'creado_en_chile';
+  if (!ml && !cech) { c.innerHTML = ''; return; }
+  c.innerHTML = `<section class="tarjeta subir">
+    ${cech ? `<p class="recordatorio">📌 ${esc(RECORDATORIO_CECH)}</p>` : ''}
+    <label class="caja-archivo">${ml ? '📄 Subir inbound de Mercado Libre (PDF del envío a Full)' : '📊 Subir Excel de Creado en Chile'}
+      <input type="file" id="npFile" accept="${ml ? '.pdf,application/pdf' : '.xlsx,.xls,.csv'}"></label>
+    <div id="npFileRes">${cech && np.reparto ? `<h4>Reparto por tienda</h4>${htmlReparto(np.reparto)}` : ''}</div></section>`;
+  $('#npFile').onchange = async (ev) => {
+    const archivo = ev.target.files[0]; if (!archivo) return;
+    const r = $('#npFileRes'); r.innerHTML = '<p class="nota">Leyendo el archivo…</p>';
+    try { if (ml) await mostrarInbound(archivo, r); else await mostrarExcelCech(archivo, r); }
+    catch (e) { r.innerHTML = `<p class="error">${esc(e.message || 'No se pudo leer el archivo.')}</p>`; }
+    ev.target.value = '';
+  };
+}
+
+async function mostrarInbound(archivo, r) {
+  const v = await leerInboundML(archivo);
+  if (!v.items.length) { r.innerHTML = '<p class="error">No encontré productos en el PDF. ¿Es el PDF de «instrucciones de preparación» del envío a Full?</p>'; return; }
+  const nombre = (it) => (it.pack ? packPorId(it.pack).nombre : (E.productos.get(it.producto) || {}).nombre);
+  const buenos = v.items.filter((it) => !it.motivo && it.unidades > 0);
+  const total = buenos.reduce((a, it) => a + it.unidades * (it.pack ? packPorId(it.pack).items.reduce((s, x) => s + x.cantidad, 0) : 1), 0);
+  r.innerHTML = `<p><b>Envío a Full #${esc(v.envio || '—')}</b> · ${plural(v.items.length, 'publicación', 'publicaciones')} · ${plural(buenos.reduce((a, it) => a + it.unidades, 0), 'unidad', 'unidades')} del envío (${num(total)} al desarmar los packs)</p>
+    <ul class="ml-items">${v.items.map((it) => `<li class="${it.motivo || !it.unidades ? 'mal' : 'ok'}"><b>${it.unidades} ×</b> ${esc(it.titulo || it.codigo)}<br>
+      ${it.motivo ? `✗ ${esc(it.motivo)} Agrégalo a mano.` : !it.unidades ? '✗ No encontré la cantidad. Agrégalo a mano.' : `→ ${esc(nombre(it))}${it.porCodigo ? '' : ' <span class="chico">(por el título)</span>'}`}</li>`).join('')}</ul>
+    ${buenos.length ? '<div class="fila-botones"><button type="button" id="npAgregar">Agregar al pedido</button></div>' : ''}`;
+  const b = $('#npAgregar');
   if (b) b.onclick = () => {
-    v.items.filter((it) => it.ok).forEach((it) => {
-      if (it.pack) { const i = app.querySelector(`[data-pack="${it.pack}"]`); i.value = (parseInt(i.value, 10) || 0) + it.unidades; $('#secPacks').open = true; return; }
-      it.lineas.forEach((l) => { const i = app.querySelector(`[data-np="${l.producto}"][data-unidad="unidad"]`); if (i) i.value = (parseInt(i.value, 10) || 0) + l.cantidad; });
-      $('#secProd').open = true;
+    buenos.forEach((it) => {
+      if (it.pack) { sumarCampo(`[data-pack="${it.pack}"]`, it.unidades); $('#secPacks').open = true; }
+      else sumarCampo(`[data-np="${it.producto}"][data-unidad="unidad"]`, it.unidades);
     });
-    if (!E.ctx.np.destino) { E.ctx.np.destino = 'mercado_libre'; pintarDestino(); }
-    const nota = $('#npNota');
-    v.ventas.forEach((num) => { if (!nota.value.includes(num)) nota.value = `${nota.value ? nota.value + ' · ' : ''}Venta ML #${num}`; });
-    $('#mlTexto').value = ''; c.innerHTML = '<p class="cuadra">Agregado al pedido. Revisa el total abajo.</p>';
+    if (v.envio) agregarNota(`Envío Full #${v.envio}`);
+    r.innerHTML = `<p class="cuadra">Agregado el envío #${esc(v.envio || '')}. Revisa el total abajo.</p>`;
+    actualizarResumenPedido();
+  };
+}
+
+async function mostrarExcelCech(archivo, r) {
+  const v = await leerExcelCech(archivo);
+  if (!v.reparto.length) { r.innerHTML = '<p class="error">No encontré cantidades en el Excel.</p>'; return; }
+  r.innerHTML = `<h4>Reparto por tienda</h4>${htmlReparto(v.reparto)}
+    ${v.malos.length ? `<ul class="ml-items">${v.malos.map(([n, m]) => `<li class="mal">${esc(n)}<br>✗ ${esc(m)} Agrégalo a mano.</li>`).join('')}</ul>` : ''}
+    <div class="fila-botones"><button type="button" id="npAgregar">Agregar al pedido</button></div>`;
+  $('#npAgregar').onclick = () => {
+    v.reparto.forEach((t) => t.lineas.forEach((l) => {
+      if (l.producto === 'pack') { sumarCampo('[data-pack="cajita"]', l.cantidad); $('#secPacks').open = true; }
+      else sumarCampo(`[data-np="${l.producto}"][data-unidad="unidad"]`, l.cantidad);
+    }));
+    E.ctx.np.reparto = v.reparto;
+    r.innerHTML = `<p class="cuadra">Agregado. Al armar, el pedido muestra cuánto va a cada tienda.</p><h4>Reparto por tienda</h4>${htmlReparto(v.reparto)}`;
     actualizarResumenPedido();
   };
 }
@@ -939,7 +1057,7 @@ function pintarDestino() {
     ${np.destino === 'supermercado' ? `<p class="chico">Para supermercados lo normal es subir la factura. Usa esto solo si no hay factura.</p>
       <div class="opciones">${Object.entries(CADENAS).map(([k, n]) => `<button type="button" data-cadena="${k}" class="${np.cadena === k ? 'elegida' : ''}">${n}</button>`).join('')}</div>
       ${np.cadena === 'lider' ? `<div class="opciones">${Object.entries(CDS).map(([k, n]) => `<button type="button" data-cd="${k}" class="${np.cd === k ? 'elegida' : ''}">${n}</button>`).join('')}</div>` : ''}` : ''}`;
-  c.querySelectorAll('[data-destino]').forEach((b) => { b.onclick = () => { np.destino = b.dataset.destino; if (np.destino === 'mercado_libre') $('#secML').open = true; pintarDestino(); actualizarResumenPedido(); }; });
+  c.querySelectorAll('[data-destino]').forEach((b) => { b.onclick = () => { const antes = np.destino; np.destino = b.dataset.destino; pintarDestino(); if (antes !== np.destino) pintarArchivo(); actualizarResumenPedido(); }; });
   c.querySelectorAll('[data-cadena]').forEach((b) => { b.onclick = () => { np.cadena = b.dataset.cadena; if (np.cadena !== 'lider') np.cd = null; pintarDestino(); actualizarResumenPedido(); }; });
   c.querySelectorAll('[data-cd]').forEach((b) => { b.onclick = () => { np.cd = b.dataset.cd; pintarDestino(); actualizarResumenPedido(); }; });
   const ic = $('#npCliente'); if (ic) ic.oninput = () => { np.cliente = ic.value; actualizarResumenPedido(); };
@@ -979,6 +1097,7 @@ function actualizarResumenPedido() {
   $('#npResumen').textContent = falta || `En total: ${resumenCant(cj, u)}.`;
   $('#npCrear').disabled = !!falta;
 }
+const repartoDe = (np) => (np.destino === 'creado_en_chile' ? np.reparto || [] : []);
 async function crearPedido() {
   const np = E.ctx.np; const ls = lineasPedido(); if (!ls.length || !np.destino) return;
   $('#npCrear').disabled = true;
@@ -987,6 +1106,7 @@ async function crearPedido() {
       p_cadena: np.destino === 'supermercado' ? np.cadena : null, p_cd: np.destino === 'supermercado' && np.cadena === 'lider' ? np.cd : null,
       p_nota: $('#npNota').value.trim() || null });
     const pk = packsPedido(); if (pk.length) await rpc('pedido_packs', { p_pedido: r.pedido.id, p_packs: pk });
+    const rp = repartoDe(np); if (rp.length) await rpc('pedido_reparto', { p_pedido: r.pedido.id, p_reparto: rp });
     pitido(true); aviso(`${r.pedido.etiqueta} creado: ${resumenCant(r.pedido.cajas, r.pedido.unidades)}`, 'ok');
     ir('preparar', { id: r.pedido.id }, { reemplazar: true });
   } catch (e) { $('#npCrear').disabled = false; throw e; }
@@ -1000,6 +1120,7 @@ async function guardarEdicionPedido() {
       p_cadena: np.destino === 'supermercado' ? np.cadena : null, p_cd: np.destino === 'supermercado' && np.cadena === 'lider' ? np.cd : null,
       p_nota: $('#npNota').value.trim() || null });
     await rpc('pedido_packs', { p_pedido: np.editar, p_packs: packsPedido() });
+    await rpc('pedido_reparto', { p_pedido: np.editar, p_reparto: repartoDe(np) });
     pitido(true); aviso(`${r.pedido.etiqueta} guardado: ${resumenCant(r.pedido.cajas, r.pedido.unidades)}`, 'ok');
     volverAPantalla('preparar', { id: np.editar });
   } catch (e) { $('#npCrear').disabled = false; throw e; }
@@ -1636,7 +1757,8 @@ PANTALLAS.ayuda = () => {
   <section class="tarjeta"><h3>Pedidos: cargar, armar y retirar</h3><ol>
     <li><b>Cargar</b>: un pedido de supermercado se carga con <b>Subir factura</b> (lee el XML); los de Mercado Libre, Creado en Chile, Berni o clientes, con <b>Nuevo pedido</b>. Cargar no arma nada: el pedido queda <b>pendiente</b> en <b>Pedidos</b>.</li>
     <li><b>Packs</b>: en Nuevo pedido, la sección <b>Packs</b> recibe los packs tal como se vendieron (por ejemplo, 2 × «1 Ulmo + 1 Bosque Nativo · 1 kg»); la app los suma en frascos junto con lo de <b>Productos</b>. La cajita Sabores de 300 g también está ahí. Al armar, el pedido dice qué packs juntar.</li>
-    <li><b>Venta de Mercado Libre</b>: cópiala desde el listado de ventas (título, atributos y «1 unidad») y pégala en <b>Pegar venta de Mercado Libre</b>. La app reconoce el producto o pack, lo agrega y anota el número de venta. Las ventas <b>Full</b> salen del centro de Mercado Libre, no de la bodega.</li>
+    <li><b>Mercado Libre</b>: en Nuevo pedido, elige Mercado Libre y sube el PDF del envío a Full (el inbound, «instrucciones de preparación»). La app reconoce cada producto y pack, los agrega y anota el número de envío. Lo que no reconozca lo marca en rojo para agregarlo a mano.</li>
+    <li><b>Creado en Chile</b>: elige Creado en Chile y sube su Excel. La app suma lo de todas las tiendas y, al armar, muestra cuánto va a cada una, con el recordatorio del palito, los separadores y la etiqueta de Falabella para Portal LD.</li>
     <li><b>Armar</b>: la Pipa lo abre y pistolea cada frasco o caja a medida que lo junta (sin pistola, con Búsqueda manual). Completo, pasa a <b>Por retirar</b>.</li>
     <li><b>Retirar</b>: cuando sale de la bodega (courier, Berni o el cliente), se toca Marcar retirado y recién ahí se descuenta del stock. Solo se puede con el pedido armado.</li></ol>
     <p class="chico">En <b>Stock</b> se ve, por producto, cuánto está en pedidos pendientes y cuánto armado por retirar.</p></section>

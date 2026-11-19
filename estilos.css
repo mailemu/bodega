@@ -292,3 +292,11 @@ textarea:focus { outline: 2px solid var(--miel); border-color: var(--miel); }
 .total-pedido { border: 2px solid var(--petroleo); }
 .packs-pedido { background: var(--miel-suave); border-radius: 10px; padding: 8px 12px; margin: 8px 0; }
 .packs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0 24px; }
+/* Subir inbound o Excel, reparto por tienda */
+.caja-archivo { display: block; border: 2px dashed var(--miel); border-radius: 12px; padding: 14px; background: var(--miel-suave); font-weight: 700; color: var(--petroleo); cursor: pointer; }
+.caja-archivo input { margin-top: 10px; background: #fff; }
+.recordatorio { background: var(--alerta-fondo); border-left: 4px solid var(--miel); border-radius: 10px; padding: 10px 12px; font-weight: 700; color: var(--alerta); }
+.tabla-scroll { overflow-x: auto; }
+.tabla.reparto th.portal, .tabla.reparto td.portal { background: var(--alerta-fondo); }
+.tabla th.sub { font-size: 13px; color: var(--suave); padding-top: 10px; text-align: left; }
+.packs-grid input[type=number] { width: 86px; min-width: 86px; }
