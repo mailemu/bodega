@@ -84,6 +84,12 @@ function dialogo({ titulo, html, aceptar = 'Aceptar', cancelar = 'Cancelar', cas
   });
 }
 
+// Pregunta Sí/No dentro de la app (en vez de la ventana del navegador)
+async function confirmar(texto, { titulo = '¿Seguro?', aceptar = 'Sí', cancelar = 'Cancelar' } = {}) {
+  const r = await dialogo({ titulo, html: `<p>${esc(texto).replace(/\n/g, '<br>')}</p>`, aceptar, cancelar });
+  return r.ok;
+}
+
 // Aviso que se muestra hasta que la usuaria marque "No volver a mostrar" (se recuerda por usuaria en este aparato)
 async function avisoPrimeraVez(clave, titulo, html) {
   const k = `no_mostrar_${clave}_${E.usuaria}`;
@@ -302,8 +308,8 @@ function pintarLog() {
 document.addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-deshacer]'); if (!b) return;
   const l = E.log.find((x) => x.id === Number(b.dataset.deshacer)); if (!l || l.deshecho) return;
-  if (!confirm(`¿Deshacer esto?\n\n${l.texto}`)) return;
   encolar(async () => {
+    if (!(await confirmar(l.texto, { titulo: '¿Deshacer esto?', aceptar: 'Sí, deshacer' }))) return;
     await rpc('op_anular', { p_operacion: l.op, p_motivo: `Deshecho al momento por ${E.nombre}` });
     l.deshecho = true; pintarLog(); pitido(true); aviso('Listo, se deshizo.', 'ok');
     if (l.alDeshacer) await l.alDeshacer();
@@ -345,7 +351,11 @@ async function cargarBase() {
   await cargarTambores();
 }
 async function cargarTambores() {
-  E.tambores = await consulta(sb.from('v_tambores').select('*').eq('estado', 'abierto').order('abierto_en', { ascending: false }));
+  const [a, c] = await Promise.all([
+    consulta(sb.from('v_tambores').select('*').eq('estado', 'abierto').order('abierto_en', { ascending: false })),
+    consulta(sb.from('v_tambores').select('id,variedad').eq('estado', 'sin_abrir')),
+  ]);
+  E.tambores = a; E.cerrados = c; // cerrados = sin usar, disponibles en bodega
 }
 function tamborDe(variedad) {
   const abiertos = E.tambores.filter((t) => t.variedad === variedad);
@@ -386,7 +396,7 @@ function pintarCabecera() {
     <div class="titulo">${enInicio ? 'Mailemu <span>Bodega</span>' : esc(TITULOS[E.pantalla] || '')}</div>
     ${E.usuaria ? `<div class="quien"><span>${esc(E.nombre)}</span><button class="enlace" id="salir">Salir</button></div>` : ''}`;
   const s = $('#salir');
-  if (s) s.onclick = async () => { if (confirm('¿Cerrar sesión en este aparato?')) await sb.auth.signOut(); };
+  if (s) s.onclick = async () => { if (await confirmar('Tendrás que volver a entrar con tu correo.', { titulo: '¿Cerrar sesión en este aparato?', aceptar: 'Cerrar sesión' })) await sb.auth.signOut(); };
   // La flecha sigue el mismo camino que el botón "atrás" del celular cuando se llegó desde la pantalla de arriba
   const v = $('#btnVolver');
   if (v) v.onclick = () => { if (history.state && history.state.desde === padre) history.back(); else ir(padre, padre === 'preparar' ? { id: E.ctx.id } : {}); };
@@ -457,7 +467,7 @@ PANTALLAS.inicio = async () => {
   <div class="grupo">Ver y corregir</div>
   <div class="menu">
     <button class="grande claro" data-ir="stock"><b>Stock</b><span>Cuánto hay de cada producto</span></button>
-    <button class="grande claro" data-ir="tambores"><b>Tambores</b><span>Kilos de cada tambor; abrir, cerrar, corregir</span></button>
+    <button class="grande claro" data-ir="tambores"><b>Tambores</b><span id="subTambores">Cerrados, abiertos y usados; registrar y abrir</span></button>
     <button class="grande claro" data-ir="historial"><b>Historial</b><span>Todo lo registrado; deshacer errores</span></button>
     <button class="grande claro" data-ir="conteo"><b>Conteo de inventario</b><span>Inventario inicial o corregir lo contado</span></button>
     <button class="grande claro" data-ir="config"><b>Configuración</b><span>Nombres, códigos de barra y avisos</span></button>
@@ -466,12 +476,16 @@ PANTALLAS.inicio = async () => {
   const [peds, ops] = await Promise.all([
     sb.from('v_pedidos').select('completo').eq('estado', 'por_retirar'),
     sb.from('operaciones').select('id', { count: 'exact', head: true }),
+    cargarTambores(),
   ]);
   const lista = peds.data || [];
   const nPend = lista.filter((x) => !x.completo).length; const nListos = lista.length - nPend;
   const n = $('#nPend'); if (n && nPend) { n.textContent = nPend; n.classList.remove('oculto'); }
   const sp = $('#subPedidos');
   if (sp && lista.length) sp.textContent = `${plural(nPend, 'pendiente por armar', 'pendientes por armar')} · ${plural(nListos, 'listo para retirar', 'listos para retirar')}`;
+  const st = $('#subTambores'); const cer = E.cerrados || [];
+  if (st) st.textContent = plural(cer.length, 'tambor disponible', 'tambores disponibles')
+    + (cer.length ? `: ${Object.entries(VARIEDADES).map(([v, n]) => `${cer.filter((x) => x.variedad === v).length} ${n}`).join(' · ')}` : '');
   const pp = $('#primerPaso');
   if (pp && ops.count === 0) {
     pp.innerHTML = enlazar(`<div class="aviso-inicio"><strong>Primer paso: crea el inventario.</strong><br>
@@ -509,7 +523,7 @@ function pintarUsos() {
   s.innerHTML = Object.entries(VARIEDADES).map(([v, nombre]) => {
     const abiertos = E.tambores.filter((t) => t.variedad === v);
     const t = tamborDe(v);
-    if (!t) return `<div class="uso falta ${CLASE_VARIEDAD[v]}"><b>${nombre}</b><span class="texto">Sin tambor abierto</span><button type="button" class="cambiar" data-ir="tambores">abrir uno</button></div>`;
+    if (!t) return `<div class="uso falta ${CLASE_VARIEDAD[v]}"><b>${nombre}</b><span class="texto">Sin tambor abierto · ${plural((E.cerrados || []).filter((x) => x.variedad === v).length, 'cerrado disponible', 'cerrados disponibles')}</span><button type="button" class="cambiar" data-ir="tambores">abrir uno</button></div>`;
     // Misma fila para todos (las barras quedan alineadas); si hay más de un tambor abierto, "cambiar" abre la lista
     return `<div class="uso ${CLASE_VARIEDAD[v]}"><b>${nombre}</b><span class="texto">${esc(nombreTambor(t))} · <span class="kgbarra">quedan <strong>${num(t.kg_restantes)} kg</strong>${miniBarra(t)}</span></span>
       ${abiertos.length > 1 ? `<button type="button" class="cambiar" data-cambiar="${v}">cambiar</button>` : ''}</div>`;
@@ -713,7 +727,7 @@ async function preparar(id, p, unidad, desarmar = false, cantidad = 1) {
   } catch (e) {
     if (e.codigo === 'FALTAN_SUELTAS' && !desarmar) {
       pitido(false);
-      if (confirm(e.message)) return preparar(id, p, unidad, true, cantidad);
+      if (await confirmar(e.message, { titulo: 'No hay frascos sueltos', aceptar: 'Sí, desarmar una caja' })) return preparar(id, p, unidad, true, cantidad);
       throw new Error(`${p.nombre}: no se pistoleó (no se desarmó la caja)`);
     }
     throw e;
@@ -731,11 +745,11 @@ async function preparar(id, p, unidad, desarmar = false, cantidad = 1) {
 async function retirar(id) {
   const p = E.ctx.pedido; if (!p) return;
   if (!p.completo) throw new Error('Primero arma el pedido: pistolea (o busca a mano) todo lo que lleva.');
-  if (!confirm(`¿Confirmas que ${p.etiqueta} salió de la bodega? Se descuenta del stock.`)) return;
+  if (!(await confirmar(`${p.etiqueta} salió de la bodega. Se descuenta del stock.`, { titulo: '¿Confirmas el retiro?', aceptar: 'Sí, salió' }))) return;
   const r = await rpc('op_retirar', { p_pedido: id });
   avisosDe(r); pitido(true);
   aviso(`${p.etiqueta}: retirado`, 'ok', { texto: 'Deshacer', fn: () => encolar(async () => {
-    if (!confirm(`¿Deshacer el retiro de ${p.etiqueta}? Vuelve a quedar pendiente en Pedidos.`)) return;
+    if (!(await confirmar(`${p.etiqueta} vuelve a quedar pendiente en Pedidos.`, { titulo: '¿Deshacer el retiro?', aceptar: 'Sí, deshacer' }))) return;
     await rpc('op_anular', { p_operacion: r.operacion, p_motivo: `Retiro deshecho al momento por ${E.nombre}` });
     aviso('Retiro deshecho: el pedido vuelve a quedar pendiente en Pedidos.', 'ok');
     if (E.pantalla === 'pedidos') ir('pedidos', {}, { historial: false });
@@ -750,10 +764,8 @@ function volverAPantalla(p, ctx = {}) {
 
 async function anularPedido(id) {
   const p = E.ctx.pedido; if (!p) return;
-  const motivo = prompt(`¿Por qué se anula ${p.etiqueta}? (ej.: "cargado dos veces", "el cliente lo canceló")`);
-  if (motivo === null) return;
-  if (!motivo.trim()) throw new Error('Para anular hay que escribir el motivo.');
-  await rpc('anular_pedido', { p_pedido: id, p_motivo: motivo.trim() });
+  if (!(await confirmar(`${p.etiqueta} se anula y su stock queda libre.`, { titulo: '¿Anular este pedido?', aceptar: 'Sí, anular' }))) return;
+  await rpc('anular_pedido', { p_pedido: id, p_motivo: `Anulado por ${E.nombre}` });
   pitido(true); aviso(`${p.etiqueta}: anulado. Su stock queda libre.`, 'ok');
   volverAPantalla('pedidos');
 }
@@ -1241,9 +1253,10 @@ function pintarFactura() {
 // ───────── Stock ─────────
 
 PANTALLAS.stock = async () => {
-  app.innerHTML = guia('stock_v3', [
-    '<b>Disponibles en bodega</b>: lo que se puede vender, separado en frascos sueltos y cajas. No incluye lo que ya está en pedidos.',
+  app.innerHTML = guia('stock_v4', [
+    '<b>Disponibles en bodega</b>: lo que se puede vender, en frascos sueltos y cajas. No incluye lo que ya está en pedidos. Solo aparece lo que tiene stock.',
     '<b>Stock por retirar</b>: lo que ya tiene dueño, pedido por pedido: pendientes por armar y armados esperando retiro. Toca un pedido para abrirlo.',
+    '<b>Tambores</b>: cuántos tambores cerrados (sin usar) hay de cada miel, y los abiertos.',
     'Si algo sale en rojo (negativo), hay que revisarlo con un <b>Conteo de inventario</b>.',
   ]) + `<div class="fila-botones"><button class="sec mini" id="refrescar">Actualizar</button><button class="sec mini" data-ir="conteo">Conteo de inventario</button></div>
   <div id="st"><p class="nota">Cargando…</p></div>`;
@@ -1256,130 +1269,165 @@ PANTALLAS.stock = async () => {
   ]);
   const c = $('#st'); if (!c) return;
   s.sort(ordenProductos);
-  const kg = (v, est) => t.filter((x) => x.variedad === v && (!est || x.estado === est)).reduce((a, x) => a + Number(x.kg_restantes), 0);
-  const punto = (p) => (p.variedad ? `<i class="punto ${CLASE_VARIEDAD[p.variedad]}"></i>` : '<i class="punto"></i>');
-  const fila = (p, n, uno, varios) => `<tr class="${n ? '' : 'cero'}"><td>${punto(p)}${esc(p.nombre)}</td><td class="num ${n < 0 ? 'neg' : ''}">${plural(n, uno, varios)}</td></tr>`;
-  const sueltos = s.map((x) => { const [uno, varios] = x.caja_controlada ? ['frasco', 'frascos'] : unidadDe(x); return fila(x, x.disp_sueltas, uno, varios); }).join('');
-  const cajas = s.filter((x) => x.caja_controlada).map((x) => fila(x, x.disp_cajas, `caja de ${x.uds_por_caja}`, `cajas de ${x.uds_por_caja}`)).join('');
+  const punto = (p) => `<i class="punto ${CLASE_VARIEDAD[p.variedad] || ''}"></i>`;
+  const celda = (n, txt) => (n ? `<td class="num ${n < 0 ? 'neg' : ''}">${txt}</td>` : '<td class="num vacio">—</td>');
+  // Solo lo que tiene stock (o un negativo que revisar)
+  const con = s.filter((x) => x.disp_sueltas || (x.caja_controlada && x.disp_cajas));
+  const filas = con.map((x) => {
+    const [uno, varios] = x.caja_controlada ? ['frasco', 'frascos'] : unidadDe(x);
+    return `<tr><td>${punto(x)}${esc(x.nombre)}</td>${celda(x.disp_sueltas, plural(x.disp_sueltas, uno, varios))}
+      ${x.caja_controlada ? celda(x.disp_cajas, `${plural(x.disp_cajas, 'caja', 'cajas')} <span class="chico">(${num(x.disp_cajas * x.uds_por_caja)} u.)</span>`) : '<td class="num vacio">—</td>'}</tr>`;
+  }).join('');
   const lineasDe = (id) => lineas.filter((l) => l.pedido_id === id);
-  const fichaPedido = (p) => `<button type="button" class="pedido-stock ${p.completo ? 'listo' : ''}" data-ir="preparar" data-id="${p.id}">
+  const fichaPedido = (p) => `<div role="button" tabindex="0" class="pedido-stock ${p.completo ? 'listo' : ''}" data-ir="preparar" data-id="${p.id}">
       <span class="cabeza"><b>${esc(p.etiqueta)}</b><span class="etiqueta ${p.completo ? 'abierto' : 'pendiente'}">${p.completo ? '📦 Armado' : '⏰ Por armar'}</span></span>
-      <span class="lineas-ped">${lineasDe(p.id).map((l) => `<span>${esc(l.producto)}: ${plural(l.cantidad, l.unidad === 'caja' ? 'caja' : 'unidad', l.unidad === 'caja' ? 'cajas' : 'unidades')}</span>`).join('')}</span></button>`;
+      <table class="tabla compacta mini-tabla">${lineasDe(p.id).map((l) => { const pr = E.productos.get(l.producto_id) || {};
+        return `<tr><td>${punto(pr)}${esc(l.producto)}</td><td class="num">${plural(l.cantidad, l.unidad === 'caja' ? 'caja' : 'unidad', l.unidad === 'caja' ? 'cajas' : 'unidades')}</td></tr>`; }).join('')}</table></div>`;
   c.innerHTML = `<section class="tarjeta"><h3>Disponibles en bodega</h3>
-    <div class="dos-col">
-      <div><h4>Frascos sueltos envasados</h4><table class="tabla compacta">${sueltos}</table></div>
-      <div><h4>Cajas</h4><table class="tabla compacta">${cajas}</table></div>
-    </div></section>
+    ${con.length ? `<table class="tabla stock-tabla"><tr><th>Producto</th><th class="num">Frascos sueltos</th><th class="num">Cajas</th></tr>${filas}</table>`
+      : '<p class="nota">No hay nada disponible en bodega.</p>'}</section>
   <section class="tarjeta"><h3>Stock por retirar</h3>
     ${peds.length ? `<div class="lista">${peds.map(fichaPedido).join('')}</div>` : '<p class="nota">No hay pedidos pendientes ni por retirar.</p>'}</section>
-  <section class="tarjeta"><h3>Miel en tambores</h3>
-    <table class="tabla compacta"><tr><th>Variedad</th><th class="num">Abiertos</th><th class="num">Sin abrir</th></tr>
-      ${Object.entries(VARIEDADES).map(([v, n]) => `<tr><td><i class="punto ${CLASE_VARIEDAD[v]}"></i>${n}</td><td class="num">${num(kg(v, 'abierto'))} kg</td><td class="num">${num(kg(v, 'sin_abrir'))} kg</td></tr>`).join('')}
-    </table><p class="chico">${enlazar('Detalle de cada tambor en <b>Tambores</b>.')}</p></section>`;
+  <section class="tarjeta"><h3>Tambores</h3>${htmlResumenTambores(t)}<p class="chico">${enlazar('Detalle de cada tambor en <b>Tambores</b>.')}</p></section>`;
 };
 
+// Cuántos tambores hay de cada miel: cerrados (sin usar, disponibles) y abiertos. Se usa en Stock y en Tambores.
+function htmlResumenTambores(t) {
+  const de = (v, est) => t.filter((x) => x.variedad === v && x.estado === est);
+  const kg = (ts) => ts.reduce((a, x) => a + Number(x.kg_restantes), 0);
+  return `<div class="tamb-resumen">${Object.entries(VARIEDADES).map(([v, n]) => { const c = de(v, 'sin_abrir'); const a = de(v, 'abierto');
+    return `<div class="tamb-var ${CLASE_VARIEDAD[v]}"><span class="nombre">${n}</span>
+      <span class="cuantos"><b>${c.length}</b> ${c.length === 1 ? 'tambor disponible' : 'tambores disponibles'}</span>
+      <span class="chico">${c.length ? `${num(kg(c))} kg cerrados · ` : ''}${a.length ? `${plural(a.length, 'abierto', 'abiertos')} (quedan ${num(kg(a))} kg)` : 'ninguno abierto'}</span></div>`; }).join('')}</div>`;
+}
+
 // ───────── Tambores ─────────
+// Tres estados para llevar la cuenta: cerrados (sin usar, disponibles en bodega), abiertos (en uso) y usados (terminados).
+// En la base: sin_abrir = cerrado, abierto = abierto, cerrado = usado.
 
 PANTALLAS.tambores = async () => {
-  app.innerHTML = guia('tambores', [
-    '<b>Registrar tambor</b>: cuando llega uno, anota sus kilos (los que vienen escritos por fuera). Si ya está empezado (inventario inicial), anota los kilos que le quedan.',
-    '<b>Abrir</b>: cuando empiezas a envasar de él. Puede haber más de uno abierto por variedad.',
-    '<b>Cerrar</b>: cuando se termina. La app calcula el rendimiento y la merma.',
+  app.innerHTML = guia('tambores_v2', [
+    'Arriba ves cuántos tambores <b>cerrados</b> (sin usar) hay de cada miel: son los disponibles en bodega.',
+    '<b>Registrar tambores</b>: cuando llegan, anota el número o nombre, la miel y los kilos. Si llegan varios iguales, escribe cuántos. Quedan <b>cerrados</b> hasta que los abras.',
+    '<b>Abrir</b>: cuando empiezas a envasar de él. Puede haber más de uno abierto por miel.',
+    '<b>Terminado</b>: cuando se acaba. Pasa a <b>Usados</b>, con lo que se envasó de él.',
     '¿Lo anotaste mal? Usa <b>Corregir</b> (kilos o nombre) o <b>Anular</b> (si se ingresó por error).',
-  ]) + `<button type="button" class="ancho" id="btnNuevoT">+ Registrar tambor</button>
+  ]) + `<div id="resT"></div>
+  <button type="button" class="ancho" id="btnNuevoT">+ Registrar tambores</button>
   <form id="fTambor" class="tarjeta oculto">
-    <h3>Registrar tambor</h3>
-    <label>Variedad<select name="variedad" required><option value="">Elige…</option>${Object.entries(VARIEDADES).map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>
-    <label>Kilos<input name="kg" type="text" inputmode="decimal" autocomplete="off" required placeholder="Ej.: 300 o 287,5"></label>
-    <label>Nombre o identificación (opcional)<input name="ident" placeholder="Ej.: T-U4, o lo que diga el tambor"></label>
-    <label class="check"><input type="checkbox" name="abrir" checked> Lo abro ahora (voy a envasar de él)</label>
+    <h3>Registrar tambores</h3>
+    <label>Miel</label><div class="opciones" id="fVar">${Object.entries(VARIEDADES).map(([v, n]) => `<button type="button" class="var-btn ${CLASE_VARIEDAD[v]}" data-var="${v}">${n}</button>`).join('')}</div>
+    <div class="dos-col">
+      <label>Kilos de cada tambor<input name="kg" type="text" inputmode="decimal" autocomplete="off" required placeholder="Ej.: 300 o 287,5"></label>
+      <label>¿Cuántos tambores?<input name="cuantos" type="number" min="1" max="50" inputmode="numeric" value="1"></label>
+    </div>
+    <label>Número o nombre (opcional)<input name="ident" placeholder="Ej.: T-U4, o lo que diga el tambor"></label>
+    <label class="check" id="lblAbrir"><input type="checkbox" name="abrir"> Lo abro ahora (voy a envasar de él)</label>
     <div class="fila-botones"><button type="submit">Registrar</button><button type="button" class="sec" id="cancTambor">Cancelar</button></div>
   </form>
-  <div id="listaT" class="lista"><p class="nota">Cargando…</p></div>`;
-  const f = $('#fTambor');
-  $('#btnNuevoT').onclick = () => { f.classList.remove('oculto'); $('#btnNuevoT').classList.add('oculto'); f.variedad.focus(); };
-  $('#cancTambor').onclick = () => { f.reset(); f.classList.add('oculto'); $('#btnNuevoT').classList.remove('oculto'); };
-  f.onsubmit = (ev) => { ev.preventDefault(); encolar(() => registrarTambor(f)); };
+  <div id="listaT"><p class="nota">Cargando…</p></div>`;
+  const f = $('#fTambor'); let variedad = null;
+  const elegirVar = (v) => { variedad = v; f.querySelectorAll('[data-var]').forEach((b) => b.classList.toggle('elegida', b.dataset.var === v)); };
+  f.querySelectorAll('[data-var]').forEach((b) => { b.onclick = () => elegirVar(b.dataset.var); });
+  const cerrarForm = () => { f.reset(); elegirVar(null); f.classList.add('oculto'); $('#btnNuevoT').classList.remove('oculto'); };
+  f.cuantos.oninput = () => { const varios = parseInt(f.cuantos.value, 10) > 1; $('#lblAbrir').classList.toggle('oculto', varios); if (varios) f.abrir.checked = false; };
+  $('#btnNuevoT').onclick = () => { f.classList.remove('oculto'); $('#btnNuevoT').classList.add('oculto'); f.kg.focus(); };
+  $('#cancTambor').onclick = cerrarForm;
+  f.onsubmit = (ev) => { ev.preventDefault(); encolar(async () => { if (await registrarTambores(f, variedad)) { cerrarForm(); await pintarTambores(); } }); };
   await pintarTambores();
 };
 
 async function pintarTambores() {
-  const lista = await consulta(sb.from('v_tambores').select('*').neq('estado', 'anulado').order('creado_en', { ascending: false }).limit(60));
+  const lista = await consulta(sb.from('v_tambores').select('*').neq('estado', 'anulado').order('id', { ascending: true }).limit(1000));
   const c = $('#listaT'); if (!c) return;
-  const grupo = (titulo, ts) => (ts.length ? `<div class="grupo">${titulo}</div>${ts.map(fichaTambor).join('')}` : '');
-  const abiertos = lista.filter((t) => t.estado === 'abierto');
-  c.innerHTML = (lista.length ? '' : '<p class="nota">Todavía no hay tambores registrados.</p>')
-    + grupo('Abiertos', abiertos) + grupo('Sin abrir', lista.filter((t) => t.estado === 'sin_abrir'))
-    + grupo('Cerrados (últimos)', lista.filter((t) => t.estado === 'cerrado').slice(0, 15));
+  $('#resT').innerHTML = `<section class="tarjeta"><h3>Tambores disponibles</h3>${htmlResumenTambores(lista)}</section>`;
+  const porVar = (a, b) => (ORDEN_VARIEDAD[a.variedad] ?? 9) - (ORDEN_VARIEDAD[b.variedad] ?? 9) || a.id - b.id;
+  const abiertos = lista.filter((t) => t.estado === 'abierto').sort(porVar);
+  const cerrados = lista.filter((t) => t.estado === 'sin_abrir').sort(porVar);
+  const usados = lista.filter((t) => t.estado === 'cerrado').sort((a, b) => b.id - a.id);
+  const miel = (t) => `<span class="miel ${CLASE_VARIEDAD[t.variedad]}"><i class="punto"></i>${VARIEDADES[t.variedad]}</span>`;
+  const btn = (t, a, txt, cls = 'sec') => `<button type="button" class="mini ${cls}" data-t="${t.id}" data-accion="${a}">${txt}</button>`;
+  const fichaAbierto = (t) => {
+    const pct = Math.max(0, Math.min(100, (Number(t.kg_restantes) / Number(t.kg_iniciales)) * 100));
+    return `<div class="ficha tamb-abierto ${CLASE_VARIEDAD[t.variedad]}">
+      <div class="cabeza"><b>${esc(nombreTambor(t))}</b>${miel(t)}</div>
+      <p class="kg">Quedan ${num(t.kg_restantes)} kg <span class="chico">de ${num(t.kg_iniciales)} kg · envasado ${num(t.kg_envasados)} kg</span></p>
+      <div class="barra"><i style="width:${pct}%"></i></div>
+      <div class="fila-botones">${btn(t, 'terminar', 'Terminado', '')}${btn(t, 'corregir', 'Corregir')}${btn(t, 'anular', 'Anular', 'peligro')}</div></div>`;
+  };
+  c.innerHTML = `<section class="tarjeta"><h3>🟢 Abiertos <span class="chico">(en uso: ${abiertos.length})</span></h3>
+      ${abiertos.length ? `<div class="tamb-grid">${abiertos.map(fichaAbierto).join('')}</div>` : '<p class="nota">No hay tambores abiertos.</p>'}</section>
+    <section class="tarjeta"><h3>🔒 Cerrados <span class="chico">(sin usar, disponibles en bodega: ${cerrados.length})</span></h3>
+      ${cerrados.length ? `<div class="tabla-scroll"><table class="tabla compacta tamb-tabla"><tr><th>Tambor</th><th>Miel</th><th class="num">Peso</th><th></th></tr>
+        ${cerrados.map((t) => `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b></td><td>${miel(t)}</td><td class="num">${num(t.kg_iniciales)} kg</td>
+          <td class="acciones">${btn(t, 'abrir', 'Abrir', '')}${btn(t, 'corregir', 'Corregir')}${btn(t, 'anular', 'Anular', 'peligro')}</td></tr>`).join('')}</table></div>`
+      : '<p class="nota">No hay tambores cerrados.</p>'}</section>
+    <section class="tarjeta"><h3>✔️ Usados <span class="chico">(terminados: ${usados.length})</span></h3>
+      ${usados.length ? `<div class="tabla-scroll"><table class="tabla compacta tamb-tabla"><tr><th>Tambor</th><th>Miel</th><th class="num">Peso</th><th class="num">Envasado</th><th class="num">Merma</th><th></th></tr>
+        ${usados.map((t) => `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b></td><td>${miel(t)}</td><td class="num">${num(t.kg_iniciales)} kg</td>
+          <td class="num">${num(t.kg_envasados)} kg</td><td class="num">${num(t.merma_kg)} kg</td>
+          <td class="acciones">${btn(t, 'reabrir', 'Reabrir')}${btn(t, 'corregir', 'Corregir')}</td></tr>`).join('')}</table></div>`
+      : '<p class="nota">Todavía no hay tambores usados.</p>'}</section>`;
   c.querySelectorAll('[data-t]').forEach((b) => { b.onclick = () => encolar(() => accionTambor(b.dataset.accion, Number(b.dataset.t), lista)); });
 }
 
-function fichaTambor(t) {
-  const pct = Math.max(0, Math.min(100, (Number(t.kg_restantes) / Number(t.kg_iniciales)) * 100));
-  const etiquetas = { abierto: 'Abierto', sin_abrir: 'Sin abrir', cerrado: 'Cerrado' };
-  const botones = {
-    abierto: [['cerrar', 'Cerrar (se terminó)', 'sec'], ['corregir', 'Corregir', 'sec'], ['anular', 'Anular', 'peligro']],
-    sin_abrir: [['abrir', 'Abrir', ''], ['corregir', 'Corregir', 'sec'], ['anular', 'Anular', 'peligro']],
-    cerrado: [['reabrir', 'Reabrir', 'sec'], ['corregir', 'Corregir', 'sec']],
-  }[t.estado] || [];
-  return `<div class="ficha">
-    <div class="cabeza"><b>${VARIEDADES[t.variedad]} · ${esc(nombreTambor(t))}</b><span class="etiqueta ${t.estado}">${etiquetas[t.estado] || t.estado}</span></div>
-    ${t.estado === 'cerrado'
-      ? `<p class="kg">${num(t.kg_iniciales)} kg</p><p class="chico">Envasado ${num(t.kg_envasados)} kg · rendimiento ${num(t.rendimiento * 100)} % · merma ${num(t.merma_kg)} kg</p>`
-      : `<p class="kg">Quedan ${num(t.kg_restantes)} kg <span class="chico">de ${num(t.kg_iniciales)} kg</span></p><div class="barra"><i style="width:${pct}%"></i></div>
-         <p class="chico">Envasado ${num(t.kg_envasados)} kg</p>`}
-    <p class="chico">Registrado por ${esc(quien(t.creado_por))} el ${fechaCorta(t.ingresado_en)}${t.nota ? ` · ${esc(t.nota)}` : ''}</p>
-    <div class="fila-botones">${botones.map(([a, txt, cls]) => `<button type="button" class="mini ${cls}" data-t="${t.id}" data-accion="${a}">${txt}</button>`).join('')}</div>
-  </div>`;
+// Si al abrir un tambor ya hay otros abiertos de la misma miel, pregunta si se terminaron
+async function terminarOtrosAbiertos(otros, v) {
+  if (!otros.length) return;
+  const r = await dialogo({ titulo: `¿Se terminó ${otros.length === 1 ? 'el tambor abierto' : 'algún tambor abierto'}?`,
+    html: `<p>Ya ${otros.length === 1 ? 'hay un tambor' : `hay ${otros.length} tambores`} de ${VARIEDADES[v]} abierto${otros.length === 1 ? '' : 's'}: ${otros.map((x) => `<b>${esc(nombreTambor(x))}</b> (quedan ${num(x.kg_restantes)} kg)`).join(', ')}.</p>
+      <p class="chico">Si se terminó, pasa a Usados y lo que le quede cuenta como merma.</p>`,
+    aceptar: otros.length === 1 ? 'Sí, se terminó' : 'Sí, se terminaron', cancelar: 'No, siguen abiertos' });
+  if (r.ok) for (const x of otros) await rpc('tambor_cerrar', { p_id: x.id });
 }
 
-async function registrarTambor(f) {
-  const v = f.variedad.value; const kg = Number(String(f.kg.value).replace(',', '.'));
-  if (!v) throw new Error('Elige la variedad');
+async function registrarTambores(f, v) {
+  const kg = Number(String(f.kg.value).replace(',', '.'));
+  const cuantos = Math.max(1, parseInt(f.cuantos.value, 10) || 1);
+  if (!v) throw new Error('Elige la miel');
   if (!(kg > 0)) throw new Error('Escribe los kilos del tambor');
-  const abrir = f.abrir.checked;
-  if (abrir) {
-    const abiertos = E.tambores.filter((t) => t.variedad === v);
-    if (abiertos.length && confirm(`Ya hay ${abiertos.length === 1 ? 'un tambor' : abiertos.length + ' tambores'} de ${VARIEDADES[v]} abierto${abiertos.length === 1 ? '' : 's'} (${abiertos.map(nombreTambor).join(', ')}).\n\n¿Se terminó y hay que cerrarlo?\nAceptar = cerrar ${abiertos.length === 1 ? 'ese tambor' : 'esos tambores'} (lo que les quede cuenta como merma)\nCancelar = dejar${abiertos.length === 1 ? 'lo' : 'los'} abierto${abiertos.length === 1 ? '' : 's'} también`)) {
-      for (const t of abiertos) await rpc('tambor_cerrar', { p_id: t.id });
-    }
+  if (cuantos > 50) throw new Error('Máximo 50 tambores de una vez');
+  const abrir = cuantos === 1 && f.abrir.checked;
+  if (abrir) await terminarOtrosAbiertos(E.tambores.filter((t) => t.variedad === v), v);
+  const ident = f.ident.value.trim();
+  let ultimo = null;
+  for (let k = 1; k <= cuantos; k++) {
+    const r = await rpc('tambor_alta', { p_variedad: v, p_kg: kg, p_identificacion: ident ? (cuantos > 1 ? `${ident}-${k}` : ident) : null, p_abrir: abrir });
+    ultimo = r.tambor;
   }
-  const r = await rpc('tambor_alta', { p_variedad: v, p_kg: kg, p_identificacion: f.ident.value.trim() || null, p_abrir: abrir });
-  if (abrir) guardar('tambor_' + v, r.tambor.id);
+  if (abrir) guardar('tambor_' + v, ultimo.id);
   await cargarTambores();
-  pitido(true); aviso(`Tambor ${nombreTambor(r.tambor)} de ${VARIEDADES[v]} registrado (${num(kg)} kg)${abrir ? ' y abierto' : ''}.`, 'ok');
-  f.reset(); f.classList.add('oculto'); $('#btnNuevoT').classList.remove('oculto');
-  await pintarTambores();
+  pitido(true);
+  aviso(cuantos > 1 ? `${cuantos} tambores de ${VARIEDADES[v]} registrados (${num(kg)} kg cada uno), cerrados.`
+    : `Tambor ${nombreTambor(ultimo)} de ${VARIEDADES[v]} registrado (${num(kg)} kg)${abrir ? ' y abierto' : ', cerrado'}.`, 'ok');
+  return true;
 }
 
 async function accionTambor(accion, id, lista) {
   const t = lista.find((x) => x.id === id); if (!t) return;
   const nombre = `${VARIEDADES[t.variedad]} ${nombreTambor(t)}`;
   if (accion === 'abrir') {
-    const otros = lista.filter((x) => x.variedad === t.variedad && x.estado === 'abierto');
-    if (otros.length && confirm(`Ya hay ${otros.length === 1 ? 'otro tambor' : otros.length + ' tambores'} de ${VARIEDADES[t.variedad]} abierto${otros.length === 1 ? '' : 's'}: ${otros.map((x) => `${nombreTambor(x)} (quedan ${num(x.kg_restantes)} kg)`).join(', ')}.\n\n¿Se terminó y lo cierras? Lo que le quede cuenta como merma.\nAceptar = cerrar ese · Cancelar = dejarlo abierto también`)) {
-      for (const x of otros) await rpc('tambor_cerrar', { p_id: x.id });
-    }
+    await terminarOtrosAbiertos(lista.filter((x) => x.variedad === t.variedad && x.estado === 'abierto'), t.variedad);
     await rpc('tambor_abrir', { p_id: id }); guardar('tambor_' + t.variedad, id);
-  } else if (accion === 'cerrar') {
-    if (!confirm(`¿Cerrar el tambor ${nombre}? Quedan ${num(t.kg_restantes)} kg según la app; eso queda como merma.`)) return;
+  } else if (accion === 'terminar') {
+    if (!(await confirmar(`Quedan ${num(t.kg_restantes)} kg según la app; eso queda como merma. El tambor pasa a Usados.`, { titulo: `¿Se terminó el tambor ${nombre}?`, aceptar: 'Sí, terminado' }))) return;
     await rpc('tambor_cerrar', { p_id: id });
   } else if (accion === 'reabrir') {
-    if (!confirm(`¿Reabrir el tambor ${nombre}?`)) return;
+    if (!(await confirmar('Vuelve a quedar abierto para envasar.', { titulo: `¿Reabrir el tambor ${nombre}?`, aceptar: 'Sí, reabrir' }))) return;
     await rpc('tambor_reabrir', { p_id: id });
   } else if (accion === 'corregir') {
-    const kg = prompt(`Kilos correctos del tambor ${nombre} (los que traía al registrarlo):`, String(t.kg_iniciales));
-    if (kg === null) return;
-    const ident = prompt('Nombre o identificación (puedes dejarlo igual):', t.identificacion || '');
-    if (ident === null) return;
-    const kgN = Number(String(kg).replace(',', '.'));
+    const r = await dialogo({ titulo: `Corregir tambor ${nombre}`, aceptar: 'Guardar',
+      html: `<label>Kilos correctos (los que traía al registrarlo)<input class="dlg-kg" type="text" inputmode="decimal" value="${esc(String(t.kg_iniciales).replace('.', ','))}"></label>
+        <label>Número o nombre<input class="dlg-ident" value="${esc(t.identificacion || '')}" placeholder="Sin nombre (N.º ${t.id})"></label>`,
+      alAceptar: (d) => ({ kg: d.querySelector('.dlg-kg').value, ident: d.querySelector('.dlg-ident').value.trim() }) });
+    if (!r.ok) return;
+    const kgN = Number(String(r.valor.kg).replace(',', '.'));
     if (!(kgN > 0)) throw new Error('Escribe los kilos del tambor (solo números, ej.: 287,5)');
-    if (kgN < Number(t.kg_envasados) && !confirm(`De este tambor ya se envasaron ${num(t.kg_envasados)} kg, más que ${num(kgN)} kg: quedaría en negativo. ¿Corregir igual?`)) return;
-    await rpc('tambor_corregir', { p_id: id, p_kg: kgN, p_identificacion: ident });
+    if (kgN < Number(t.kg_envasados) && !(await confirmar(`De este tambor ya se envasaron ${num(t.kg_envasados)} kg, más que ${num(kgN)} kg: quedaría en negativo.`, { titulo: '¿Corregir igual?', aceptar: 'Sí, corregir' }))) return;
+    await rpc('tambor_corregir', { p_id: id, p_kg: kgN, p_identificacion: r.valor.ident });
   } else if (accion === 'anular') {
-    const motivo = prompt(`¿Por qué se anula el tambor ${nombre}? (ej.: "lo registré dos veces")`);
-    if (motivo === null) return;
-    await rpc('tambor_anular', { p_id: id, p_motivo: motivo });
+    if (!(await confirmar('Úsalo si se registró por error (por ejemplo, dos veces). Deja de contar en la bodega.', { titulo: `¿Anular el tambor ${nombre}?`, aceptar: 'Sí, anular' }))) return;
+    await rpc('tambor_anular', { p_id: id, p_motivo: `Anulado por ${E.nombre}` });
   }
   pitido(true); aviso('Listo.', 'ok');
   await cargarTambores(); await pintarTambores();
@@ -1571,9 +1619,9 @@ function abrirGrupo(i, boton) {
       <span class="chico">${hhmm(o.fecha)}</span><span class="txt">${esc(resumenMovs(o.movs) || TIPOS_VERBO[o.tipo])}${o.nota ? ` <span class="chico">(${esc(o.nota)})</span>` : ''}</span>
       ${o.anulada ? '<span class="chico">deshecho</span>' : o.tipo !== 'anulacion' ? `<button type="button" class="mini sec" data-anular="${o.operacion}">Deshacer</button>` : ''}</div>`).join('');
   d.querySelectorAll('[data-anular]').forEach((b) => {
-    b.onclick = () => {
+    b.onclick = async () => {
       const o = g.ops.find((x) => x.operacion === Number(b.dataset.anular));
-      if (!confirm(`¿Deshacer esto?\n\n${TIPOS_VERBO[o.tipo]} ${hhmm(o.fecha)} · ${resumenMovs(o.movs)}`)) return;
+      if (!(await confirmar(`${TIPOS_VERBO[o.tipo]} ${hhmm(o.fecha)} · ${resumenMovs(o.movs)}`, { titulo: '¿Deshacer esto?', aceptar: 'Sí, deshacer' }))) return;
       encolar(async () => {
         await rpc('op_anular', { p_operacion: o.operacion, p_motivo: `Deshecho desde el Historial por ${E.nombre}` });
         pitido(true); aviso('Listo, se deshizo.', 'ok');
@@ -1646,7 +1694,7 @@ async function guardarConteo() {
   const r = await rpc('op_conteo', { p_items: items, p_nota: nota });
   pitido(true);
   aviso(`Conteo guardado: ${plural(r.cambios, 'producto corregido', 'productos corregidos')}.`, 'ok', { texto: 'Deshacer', fn: () => encolar(async () => {
-    if (!confirm('¿Deshacer el conteo completo? El stock vuelve a lo que tenía antes.')) return;
+    if (!(await confirmar('El stock vuelve a lo que tenía antes.', { titulo: '¿Deshacer el conteo completo?', aceptar: 'Sí, deshacer' }))) return;
     await rpc('op_anular', { p_operacion: r.operacion, p_motivo: `Conteo deshecho al momento por ${E.nombre}` });
     aviso('Conteo deshecho.', 'ok'); if (E.pantalla === 'stock') ir('stock', {}, { historial: false });
   }) });
@@ -1702,7 +1750,7 @@ PANTALLAS.config = async () => {
     'Cambia el nombre de un producto o de un tambor y aprieta <b>Guardar</b> en esa fila.',
     'El nombre nuevo se ve en toda la app, también en el historial. Los códigos de barra no cambian.',
   ]) + `<section class="tarjeta"><h3>Productos</h3><div id="cfgProd" class="cfg"></div></section>
-  <section class="tarjeta"><h3>Tambores</h3><p class="nota">${enlazar('Abiertos y sin abrir. Para corregir los kilos, usa <b>Tambores</b>.')}</p><div id="cfgTamb" class="cfg"><p class="nota">Cargando…</p></div></section>
+  <section class="tarjeta"><h3>Tambores</h3><p class="nota">${enlazar('Abiertos y cerrados. Para corregir los kilos, usa <b>Tambores</b>.')}</p><div id="cfgTamb" class="cfg"><p class="nota">Cargando…</p></div></section>
   <section class="tarjeta"><h3>Códigos de barra</h3><p class="nota">Para asignar a un producto una etiqueta que la app no conoce (por ejemplo, una caja nueva o un código impreso para las cajas de 10).</p>
     <button type="button" class="sec" data-ir="codigo">Registrar código</button></section>
   <section class="tarjeta"><h3>Avisos</h3><p class="nota">Si marcaste "No volver a mostrar" en un aviso (por ejemplo, al encajar) y quieres verlo de nuevo.</p>
@@ -1722,7 +1770,7 @@ PANTALLAS.config = async () => {
   const c = $('#cfgTamb'); if (!c) return;
   c.innerHTML = ts.length ? ts.map((t) => `<div class="cfg-fila ${CLASE_VARIEDAD[t.variedad]}"><span class="chico">${VARIEDADES[t.variedad]} · ${num(t.kg_iniciales)} kg</span>
       <input value="${esc(t.identificacion || '')}" placeholder="Sin nombre (N.º ${t.id})" data-tamb="${t.id}" aria-label="Nombre del tambor ${t.id}"><button type="button" class="mini" data-guardar-tamb="${t.id}">Guardar</button></div>`).join('')
-    : '<p class="nota">No hay tambores abiertos ni sin abrir.</p>';
+    : '<p class="nota">No hay tambores abiertos ni cerrados.</p>';
   c.querySelectorAll('[data-guardar-tamb]').forEach((b) => {
     b.onclick = () => encolar(async () => {
       const t = ts.find((x) => x.id === Number(b.dataset.guardarTamb)); const nombre = app.querySelector(`[data-tamb="${t.id}"]`).value.trim();
@@ -1740,7 +1788,7 @@ PANTALLAS.ayuda = () => {
   app.innerHTML = enlazar(`<section class="tarjeta"><h3>Cómo funciona</h3>
     <p>Cada cosa que pasa en la bodega se registra pistoleando: envasar, juntar cajas, preparar y retirar pedidos. Con eso la app calcula sola el stock y los kilos de cada tambor. Nada se borra: si alguien se equivoca, se deshace y queda anotado quién y cuándo.</p></section>
   <section class="tarjeta"><h3>Primer día</h3><ol>
-    <li>En <b>Tambores</b>, registra cada tambor con sus kilos (si está empezado, los kilos que le quedan) y abre los que estás usando.</li>
+    <li>En <b>Tambores</b>, registra cada tambor con su número, miel y kilos (si está empezado, los kilos que le quedan). Quedan <b>cerrados</b> (disponibles) hasta que abras los que vas a usar.</li>
     <li>En <b>Conteo de inventario</b>, escribe cuántas cajas y frascos sueltos hay de cada producto.</li>
     <li>Desde ahí, cada envasado, caja, pedido y retiro se registra en su pantalla.</li></ol></section>
   <section class="tarjeta"><h3>Conectar la pistola</h3>
@@ -1753,7 +1801,8 @@ PANTALLAS.ayuda = () => {
     <li>Justo después: toca <b>Deshacer</b> en la línea.</li>
     <li>Más tarde: entra al <b>Historial</b> y toca <b>Deshacer</b> en ese registro.</li>
     <li>Un pedido mal cargado: ábrelo en <b>Pedidos</b> y toca <b>Editar pedido</b> (o <b>Anular</b>). Una factura con la cadena equivocada: <b>Corregir cadena</b>.</li>
-    <li>Un tambor mal anotado: en <b>Tambores</b>, usa <b>Corregir</b> o <b>Anular</b>.</li></ul></section>
+    <li>Un tambor mal anotado: en <b>Tambores</b>, usa <b>Corregir</b> o <b>Anular</b>.</li>
+    <li>Los tambores están <b>cerrados</b> (sin usar, disponibles), <b>abiertos</b> (en uso) o <b>usados</b> (terminados). Cuántos cerrados hay de cada miel se ve en Tambores, en Stock y en el menú.</li></ul></section>
   <section class="tarjeta"><h3>Pedidos: cargar, armar y retirar</h3><ol>
     <li><b>Cargar</b>: un pedido de supermercado se carga con <b>Subir factura</b> (lee el XML); los de Mercado Libre, Creado en Chile, Berni o clientes, con <b>Nuevo pedido</b>. Cargar no arma nada: el pedido queda <b>pendiente</b> en <b>Pedidos</b>.</li>
     <li><b>Packs</b>: en Nuevo pedido, la sección <b>Packs</b> recibe los packs tal como se vendieron (por ejemplo, 2 × «1 Ulmo + 1 Bosque Nativo · 1 kg»); la app los suma en frascos junto con lo de <b>Productos</b>. La cajita Sabores de 300 g también está ahí. Al armar, el pedido dice qué packs juntar.</li>

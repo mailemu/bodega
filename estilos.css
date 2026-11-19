@@ -300,3 +300,26 @@ textarea:focus { outline: 2px solid var(--miel); border-color: var(--miel); }
 .tabla.reparto th.portal, .tabla.reparto td.portal { background: var(--alerta-fondo); }
 .tabla th.sub { font-size: 13px; color: var(--suave); padding-top: 10px; text-align: left; }
 .packs-grid input[type=number] { width: 86px; min-width: 86px; }
+/* Stock en tablas y resumen de tambores */
+.stock-tabla td.vacio { color: var(--gris); }
+.stock-tabla td, .stock-tabla th { border-bottom: 1px solid var(--borde); }
+.pedido-stock { cursor: pointer; }
+.mini-tabla { margin: 0; font-size: 14px; }
+.mini-tabla td { padding: 5px 4px; border-bottom: 1px solid var(--borde); color: var(--texto); }
+.mini-tabla tr:last-child td { border-bottom: 0; }
+.tamb-resumen { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.tamb-var { display: flex; flex-direction: column; gap: 2px; border-radius: 12px; padding: 12px 14px; border-left: 6px solid var(--var, var(--gris)); background: #fff; border-top: 1px solid var(--borde); border-right: 1px solid var(--borde); border-bottom: 1px solid var(--borde); }
+.tamb-var .nombre { font: 600 15px Signika, system-ui, sans-serif; color: var(--petroleo); }
+.tamb-var .cuantos b { font: 600 26px Signika, system-ui, sans-serif; color: var(--var, var(--petroleo)); margin-right: 4px; }
+/* Tambores: colores por miel */
+.var-btn { border: 2px solid var(--var); background: var(--var-suave); color: var(--texto); font-weight: 700; }
+.var-btn.elegida { background: var(--var); color: #fff; }
+.miel { display: inline-flex; align-items: center; font-weight: 700; color: var(--texto); }
+.miel .punto { background: var(--var); }
+.tamb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.tamb-abierto { border-left: 6px solid var(--var); background: linear-gradient(90deg, var(--var-suave), #fff 60%); }
+.tamb-abierto .barra i { background: var(--var); }
+.tamb-tabla tr[class^="v-"] td:first-child { border-left: 5px solid var(--var); padding-left: 10px; }
+.tamb-tabla td { border-bottom: 1px solid var(--borde); vertical-align: middle; }
+.tamb-tabla td.acciones { text-align: right; white-space: nowrap; }
+.tamb-tabla td.acciones .mini { margin-left: 4px; }
