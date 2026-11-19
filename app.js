@@ -1307,7 +1307,8 @@ PANTALLAS.tambores = async () => {
     'Arriba ves cuántos tambores <b>cerrados</b> (sin usar) hay de cada miel: son los disponibles en bodega.',
     '<b>Registrar tambores</b>: cuando llegan, anota el número o nombre, la miel y los kilos. Si llegan varios iguales, escribe cuántos. Quedan <b>cerrados</b> hasta que los abras.',
     '<b>Abrir</b>: cuando empiezas a envasar de él. Puede haber más de uno abierto por miel.',
-    '<b>Terminado</b>: cuando se acaba. Pasa a <b>Usados</b>, con lo que se envasó de él.',
+    '<b>Terminar</b>: cuando se acaba. Pasa a <b>Usados</b>, con lo que se envasó de él.',
+    'Los usados se ordenan por año: el año actual queda a la vista y los anteriores se abren al tocarlos.',
     '¿Lo anotaste mal? Usa <b>Corregir</b> (kilos o nombre) o <b>Anular</b> (si se ingresó por error).',
   ]) + `<div id="resT"></div>
   <hr class="mini-sep">
@@ -1343,7 +1344,7 @@ async function pintarTambores() {
   const porVar = (a, b) => (ORDEN_VARIEDAD[a.variedad] ?? 9) - (ORDEN_VARIEDAD[b.variedad] ?? 9) || a.id - b.id;
   const abiertos = lista.filter((t) => t.estado === 'abierto').sort(porVar);
   const cerrados = lista.filter((t) => t.estado === 'sin_abrir').sort(porVar);
-  const usados = lista.filter((t) => t.estado === 'cerrado').sort((a, b) => b.id - a.id);
+  const usados = lista.filter((t) => t.estado === 'cerrado').sort((a, b) => new Date(b.cerrado_en) - new Date(a.cerrado_en) || b.id - a.id);
   const miel = (t) => `<span class="miel ${CLASE_VARIEDAD[t.variedad]}"><i class="punto"></i>${VARIEDADES[t.variedad]}</span>`;
   const btn = (t, a, txt, cls = 'sec') => `<button type="button" class="mini ${cls}" data-t="${t.id}" data-accion="${a}">${txt}</button>`;
   // Abiertos en tabla, igual que cerrados y usados; una barrita muestra lo que queda
@@ -1351,7 +1352,7 @@ async function pintarTambores() {
     const pct = Math.max(0, Math.min(100, (Number(t.kg_restantes) / Number(t.kg_iniciales)) * 100));
     return `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b></td><td>${miel(t)}</td>
       <td class="num">${num(t.kg_restantes)} kg<span class="barrita"><i style="width:${pct}%"></i></span></td><td class="num">${num(t.kg_iniciales)} kg</td><td class="num">${num(t.kg_envasados)} kg</td>
-      <td class="acciones">${btn(t, 'terminar', 'Terminado', '')}${btn(t, 'corregir', 'Corregir')}${btn(t, 'anular', 'Anular', 'peligro')}</td></tr>`;
+      <td class="acciones">${btn(t, 'terminar', 'Terminar', '')}${btn(t, 'corregir', 'Corregir')}${btn(t, 'anular', 'Anular', 'peligro')}</td></tr>`;
   };
   c.innerHTML = `<section class="tarjeta"><h3>🟢 Abiertos <span class="chico">(en uso: ${abiertos.length})</span></h3>
       ${abiertos.length ? `<div class="tabla-scroll"><table class="tabla compacta tamb-tabla"><tr><th>Tambor</th><th>Miel</th><th class="num">Quedan</th><th class="num">Peso</th><th class="num">Envasado</th><th></th></tr>
@@ -1361,11 +1362,16 @@ async function pintarTambores() {
         ${cerrados.map((t) => `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b></td><td>${miel(t)}</td><td class="num">${num(t.kg_iniciales)} kg</td>
           <td class="acciones">${btn(t, 'abrir', 'Abrir', '')}${btn(t, 'corregir', 'Corregir')}${btn(t, 'anular', 'Anular', 'peligro')}</td></tr>`).join('')}</table></div>`
       : '<p class="nota">No hay tambores cerrados.</p>'}</section>`;
+  // Usados agrupados por el año en que se terminaron; el año más reciente queda abierto
+  const anio = (t) => new Date(t.cerrado_en || t.abierto_en || t.ingresado_en).getFullYear();
+  const anios = [...new Set(usados.map(anio))].sort((a, b) => b - a);
+  const tablaUsados = (ts) => `<div class="tabla-scroll"><table class="tabla compacta tamb-tabla"><tr><th>Tambor</th><th>Miel</th><th class="num">Peso</th><th class="num">Envasado</th><th class="num">Merma</th><th></th></tr>
+    ${ts.map((t) => `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b></td><td>${miel(t)}</td><td class="num">${num(t.kg_iniciales)} kg</td>
+      <td class="num">${num(t.kg_envasados)} kg</td><td class="num">${num(t.merma_kg)} kg</td>
+      <td class="acciones">${btn(t, 'reabrir', 'Reabrir')}${btn(t, 'corregir', 'Corregir')}</td></tr>`).join('')}</table></div>`;
   $('#usadosT').innerHTML = `<section class="tarjeta"><h3>✔️ Usados <span class="chico">(terminados: ${usados.length})</span></h3>
-      ${usados.length ? `<div class="tabla-scroll"><table class="tabla compacta tamb-tabla"><tr><th>Tambor</th><th>Miel</th><th class="num">Peso</th><th class="num">Envasado</th><th class="num">Merma</th><th></th></tr>
-        ${usados.map((t) => `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b></td><td>${miel(t)}</td><td class="num">${num(t.kg_iniciales)} kg</td>
-          <td class="num">${num(t.kg_envasados)} kg</td><td class="num">${num(t.merma_kg)} kg</td>
-          <td class="acciones">${btn(t, 'reabrir', 'Reabrir')}${btn(t, 'corregir', 'Corregir')}</td></tr>`).join('')}</table></div>`
+      ${usados.length ? anios.map((y, k) => { const ts = usados.filter((t) => anio(t) === y);
+        return `<details class="anio" ${k === 0 ? 'open' : ''}><summary><b>${y}</b> <span class="chico">· ${plural(ts.length, 'tambor', 'tambores')} · ${num(ts.reduce((a, t) => a + Number(t.kg_envasados), 0))} kg envasados</span></summary>${tablaUsados(ts)}</details>`; }).join('')
       : '<p class="nota">Todavía no hay tambores usados.</p>'}</section>`;
   app.querySelectorAll('[data-t]').forEach((b) => { b.onclick = () => encolar(() => accionTambor(b.dataset.accion, Number(b.dataset.t), lista)); });
 }
@@ -1409,7 +1415,7 @@ async function accionTambor(accion, id, lista) {
     await terminarOtrosAbiertos(lista.filter((x) => x.variedad === t.variedad && x.estado === 'abierto'), t.variedad);
     await rpc('tambor_abrir', { p_id: id }); guardar('tambor_' + t.variedad, id);
   } else if (accion === 'terminar') {
-    if (!(await confirmar(`Quedan ${num(t.kg_restantes)} kg según la app; eso queda como merma. El tambor pasa a Usados.`, { titulo: `¿Se terminó el tambor ${nombre}?`, aceptar: 'Sí, terminado' }))) return;
+    if (!(await confirmar(`Quedan ${num(t.kg_restantes)} kg según la app; eso queda como merma. El tambor pasa a Usados.`, { titulo: `¿Se terminó el tambor ${nombre}?`, aceptar: 'Sí, terminar' }))) return;
     await rpc('tambor_cerrar', { p_id: id });
   } else if (accion === 'reabrir') {
     if (!(await confirmar('Vuelve a quedar abierto para envasar.', { titulo: `¿Reabrir el tambor ${nombre}?`, aceptar: 'Sí, reabrir' }))) return;

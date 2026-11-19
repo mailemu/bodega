@@ -328,3 +328,7 @@ textarea:focus { outline: 2px solid var(--miel); border-color: var(--miel); }
 .mini-sep { border: 0; height: 0; border-top: 2px dotted var(--gris); width: 60px; margin: 18px auto; }
 .barrita { display: block; height: 4px; background: var(--borde); border-radius: 99px; overflow: hidden; margin-top: 4px; min-width: 60px; }
 .barrita i { display: block; height: 100%; background: var(--var, var(--miel)); }
+/* Usados por año */
+details.anio { border-top: 1px solid var(--borde); padding: 6px 0; }
+details.anio > summary { cursor: pointer; padding: 6px 0; color: var(--petroleo); font-size: 16px; }
+details.anio[open] > summary { margin-bottom: 4px; }
