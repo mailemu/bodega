@@ -1132,13 +1132,14 @@ PANTALLAS.historial = async () => {
   E.ctx.mes = E.ctx.mes || 0; // 0 = este mes, 1 = el anterior…
   app.innerHTML = guia('historial_v3', [
     'El calendario muestra el mes. Cada día tiene un circulito por actividad, con el color de la leyenda de abajo.',
-    '<b>Toca un día</b> para ver su detalle. Las acciones seguidas van juntas (si se encajaron 9 cajas, es un solo registro); tócalas para ver cada una.',
-    'Bajo el calendario están los kilos envasados del mes: por persona, por variedad y por producto.',
+    '<b>Toca un día</b> para ver su detalle (tócalo de nuevo para cerrarlo). Las acciones seguidas van juntas (si se encajaron 9 cajas, es un solo registro); tócalas para ver cada una.',
+    'Bajo el calendario están los kilos envasados del mes y, más abajo, el detalle por variedad y por producto.',
     '<b>Deshacer</b> está en el detalle, para cada acción. Crea un movimiento contrario: nada se borra.',
   ]) + `<section class="tarjeta calendario">
       <div class="mes-nav"><button type="button" class="sec mini" id="mesAnt" aria-label="Mes anterior">←</button><b id="mesTit"></b>
         <button type="button" class="sec mini" id="mesSig" aria-label="Mes siguiente">→</button></div>
       <div class="cal" id="cal"><p class="nota">Cargando…</p></div>
+      <div class="cal-leyenda" id="calLeyenda"></div>
     </section>
     <div id="diaDet"></div>
     <section class="tarjeta" id="resMes"></section>`;
@@ -1218,10 +1219,12 @@ function pintarCalendario(ini, porDia) {
   }
   // Leyenda solo con las actividades que aparecen en el mes
   const enMes = ORDEN_TIPOS.filter((t) => [...porDia.values()].some((ops) => ops.some((o) => o.tipo === t && !o.anulada)));
-  html += `<div class="cal-leyenda">${enMes.map((t) => `<span><i class="pc pc-${t}"></i>${TIPOS_VERBO[t]}</span>`).join('')}</div>`;
   $('#cal').innerHTML = html;
+  $('#calLeyenda').innerHTML = enMes.map((t) => `<span><i class="pc pc-${t}"></i>${TIPOS_VERBO[t]}</span>`).join('');
   $('#cal').querySelectorAll('[data-dia]').forEach((b) => {
     b.onclick = () => {
+      // Tocar el día abierto lo cierra
+      if (E.ctx.diaSel === b.dataset.dia) { E.ctx.diaSel = null; b.classList.remove('sel'); $('#diaDet').innerHTML = ''; return; }
       E.ctx.diaSel = b.dataset.dia;
       $('#cal').querySelectorAll('.cal-dia').forEach((x) => x.classList.toggle('sel', x === b));
       pintarDia(b.dataset.dia);
@@ -1234,26 +1237,22 @@ function pintarCalendario(ini, porDia) {
 function pintarResumenMes(ini, lista) {
   const env = lista.filter((o) => o.tipo === 'envasar' && !o.anulada);
   const total = kgEnvasado(env);
-  const porPersona = new Map(); const porVariedad = new Map(); const porProducto = new Map();
+  const porVariedad = new Map(); const porProducto = new Map();
   env.forEach((o) => o.movs.forEach((m) => {
     const kg = -Number(m.d_kg || 0); const p = E.productos.get(m.producto_id) || {};
-    porPersona.set(o.usuaria, (porPersona.get(o.usuaria) || 0) + kg);
     if (p.variedad) porVariedad.set(p.variedad, (porVariedad.get(p.variedad) || 0) + kg);
     const a = porProducto.get(m.producto_id) || { p, u: 0, kg: 0 };
     a.u += m.d_sueltas + m.d_cajas * (p.uds_por_caja || 0); a.kg += kg; porProducto.set(m.producto_id, a);
   }));
   const diasEnv = new Set(env.map((o) => claveDia(new Date(o.fecha)))).size;
   const filas = (mapa, etiqueta) => [...mapa.entries()].sort((a, b) => b[1] - a[1]).map(([k, kg]) => `<tr><td>${etiqueta(k)}</td><td class="num"><b>${num(kg)} kg</b></td></tr>`).join('');
-  $('#resMes').innerHTML = `<h3>🫙 Kilos envasados en ${MESES[ini.getMonth()]}</h3>
-    ${total > 0 ? `<p class="kg-total">${num(total)} kg <span class="chico">en ${plural(diasEnv, 'día', 'días')}</span></p>
-    <div class="dos-col">
-      <div><h4>Por persona</h4><table class="tabla compacta">${filas(porPersona, (u) => esc(quien(u)))}</table>
-        <h4 style="margin-top:14px">Por variedad</h4><table class="tabla compacta">${filas(porVariedad, (v) => `<i class="punto ${CLASE_VARIEDAD[v]}"></i>${VARIEDADES[v]}`)}</table></div>
+  $('#resMes').innerHTML = total > 0 ? `<p class="kg-linea">🫙 Kilos envasados en ${MESES[ini.getMonth()]}: <b>${num(total)} kg</b> <span class="chico">(${plural(diasEnv, 'día', 'días')} con envasado)</span></p>
+    <div class="dos-col detalle-kg">
+      <div><h4>Por variedad</h4><table class="tabla compacta">${filas(porVariedad, (v) => `<i class="punto ${CLASE_VARIEDAD[v]}"></i>${VARIEDADES[v]}`)}</table></div>
       <div><h4>Por producto</h4><table class="tabla compacta">${[...porProducto.values()].sort((a, b) => ordenProductos(a.p, b.p))
         .map((a) => `<tr><td>${a.p.variedad ? `<i class="punto ${CLASE_VARIEDAD[a.p.variedad]}"></i>` : ''}${esc(a.p.nombre || '')}</td><td class="num">${plural(a.u, a.p.uds_por_caja ? 'frasco' : 'balde', a.p.uds_por_caja ? 'frascos' : 'baldes')}</td><td class="num">${num(a.kg)} kg</td></tr>`).join('')}</table></div>
-    </div>
-    <p class="chico">Kilos nominales (gramos de cada formato × unidades), sin contar lo deshecho.</p>`
-    : '<p class="nota">No hubo envasado este mes.</p>'}`;
+    </div>`
+    : `<p class="kg-linea">🫙 Kilos envasados en ${MESES[ini.getMonth()]}: <b>0 kg</b></p>`;
 }
 
 // Detalle de un día: acciones seguidas del mismo tipo, persona y pedido en un solo registro

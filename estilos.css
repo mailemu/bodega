@@ -128,21 +128,28 @@ h4 { font: 600 15px Signika, system-ui, sans-serif; color: var(--suave); margin:
 /* Historial: calendario del mes */
 .mes-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 12px; }
 .mes-nav b { font: 600 20px Signika, system-ui, sans-serif; color: var(--petroleo); text-transform: capitalize; }
-.cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
-.cal-cab { text-align: center; font-size: 13px; font-weight: 700; color: var(--suave); padding: 2px 0; }
-.cal-dia { min-height: 64px; padding: 6px 4px; border-radius: 10px; background: #f6f3ec; color: var(--suave); border: 1.5px solid transparent;
-  display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 4px; }
-.cal-dia:disabled { opacity: 1; cursor: default; background: transparent; }
+/* Cuadrícula con líneas finas entre los días */
+.cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0; border-top: 1px solid var(--borde); border-left: 1px solid var(--borde); border-radius: 12px; overflow: hidden; }
+.cal-cab { text-align: center; font-size: 13px; font-weight: 700; color: var(--petroleo); padding: 8px 0; background: var(--petroleo-suave);
+  border-right: 1px solid var(--borde); border-bottom: 1px solid var(--borde); }
+.cal-vacio { background: #fbfaf6; border-right: 1px solid var(--borde); border-bottom: 1px solid var(--borde); }
+.cal-dia { min-height: 64px; padding: 6px 4px; border-radius: 0; background: #fff; color: #a3abab; border: 0;
+  border-right: 1px solid var(--borde); border-bottom: 1px solid var(--borde);
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 6px; }
+.cal-dia:disabled { opacity: 1; cursor: default; }
 .cal-dia .n { font-weight: 700; font-size: 15px; }
-.cal-dia.con { background: #fff; color: var(--texto); border-color: var(--borde); cursor: pointer; }
-.cal-dia.con:hover { border-color: var(--petroleo); }
+.cal-dia.con { color: var(--texto); cursor: pointer; }
+.cal-dia.con:hover { background: var(--petroleo-suave); }
 .cal-dia.hoy .n { color: #fff; background: var(--petroleo); border-radius: 99px; padding: 0 7px; }
-.cal-dia.sel { border-color: var(--miel); border-width: 2.5px; background: var(--miel-suave); }
+.cal-dia.sel { background: var(--miel-suave); box-shadow: inset 0 0 0 2.5px var(--miel); }
+.kg-linea { font-size: 19px; margin: 2px 0 14px; color: var(--petroleo); }
+.kg-linea b { font: 600 24px Signika, system-ui, sans-serif; }
+.detalle-kg { border-top: 1px solid var(--borde); padding-top: 10px; }
 .puntos { display: flex; flex-wrap: wrap; justify-content: center; gap: 3px; max-width: 40px; }
 .pc { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--gris); }
 .pc-envasar { background: var(--miel); } .pc-encajar { background: var(--petroleo); } .pc-armar_pack { background: #7a4f9a; }
 .pc-desarmar { background: #c46a1b; } .pc-preparar { background: #2f6fa8; } .pc-retiro { background: var(--ok); } .pc-ajuste { background: #9aa5a5; }
-.cal-leyenda { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 13px; color: var(--suave); }
+.cal-leyenda { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 13px; color: var(--suave); }
 .cal-leyenda .pc { margin-right: 5px; vertical-align: middle; }
 .dia-detalle { margin: 4px 0 16px; }
 .kg-total { font: 600 30px Signika, system-ui, sans-serif; color: var(--petroleo); margin: 4px 0 12px; }
