@@ -323,3 +323,8 @@ textarea:focus { outline: 2px solid var(--miel); border-color: var(--miel); }
 .tamb-tabla td { border-bottom: 1px solid var(--borde); vertical-align: middle; }
 .tamb-tabla td.acciones { text-align: right; white-space: nowrap; }
 .tamb-tabla td.acciones .mini { margin-left: 4px; }
+/* Tambores: disponibles destacados, separador y barrita en la tabla de abiertos */
+.tarjeta.destacada { border: 2px solid var(--petroleo); box-shadow: 0 4px 14px rgba(13, 65, 65, .08); }
+.mini-sep { border: 0; height: 0; border-top: 2px dotted var(--gris); width: 60px; margin: 18px auto; }
+.barrita { display: block; height: 4px; background: var(--borde); border-radius: 99px; overflow: hidden; margin-top: 4px; min-width: 60px; }
+.barrita i { display: block; height: 100%; background: var(--var, var(--miel)); }

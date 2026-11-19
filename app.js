@@ -1254,7 +1254,7 @@ function pintarFactura() {
 
 PANTALLAS.stock = async () => {
   app.innerHTML = guia('stock_v4', [
-    '<b>Disponibles en bodega</b>: lo que se puede vender, en frascos sueltos y cajas. No incluye lo que ya está en pedidos. Solo aparece lo que tiene stock.',
+    '<b>Disponibles en bodega</b>: lo que se puede vender, separado en frascos sueltos y cajas. No incluye lo que ya está en pedidos. Solo aparece lo que tiene stock.',
     '<b>Stock por retirar</b>: lo que ya tiene dueño, pedido por pedido: pendientes por armar y armados esperando retiro. Toca un pedido para abrirlo.',
     '<b>Tambores</b>: cuántos tambores cerrados (sin usar) hay de cada miel, y los abiertos.',
     'Si algo sale en rojo (negativo), hay que revisarlo con un <b>Conteo de inventario</b>.',
@@ -1269,23 +1269,20 @@ PANTALLAS.stock = async () => {
   ]);
   const c = $('#st'); if (!c) return;
   s.sort(ordenProductos);
-  const punto = (p) => `<i class="punto ${CLASE_VARIEDAD[p.variedad] || ''}"></i>`;
-  const celda = (n, txt) => (n ? `<td class="num ${n < 0 ? 'neg' : ''}">${txt}</td>` : '<td class="num vacio">—</td>');
+  const punto = (p) => (p.variedad ? `<i class="punto ${CLASE_VARIEDAD[p.variedad]}"></i>` : '<i class="punto"></i>');
+  const fila = (p, n, uno, varios) => `<tr><td>${punto(p)}${esc(p.nombre)}</td><td class="num ${n < 0 ? 'neg' : ''}">${plural(n, uno, varios)}</td></tr>`;
   // Solo lo que tiene stock (o un negativo que revisar)
-  const con = s.filter((x) => x.disp_sueltas || (x.caja_controlada && x.disp_cajas));
-  const filas = con.map((x) => {
-    const [uno, varios] = x.caja_controlada ? ['frasco', 'frascos'] : unidadDe(x);
-    return `<tr><td>${punto(x)}${esc(x.nombre)}</td>${celda(x.disp_sueltas, plural(x.disp_sueltas, uno, varios))}
-      ${x.caja_controlada ? celda(x.disp_cajas, `${plural(x.disp_cajas, 'caja', 'cajas')} <span class="chico">(${num(x.disp_cajas * x.uds_por_caja)} u.)</span>`) : '<td class="num vacio">—</td>'}</tr>`;
-  }).join('');
+  const sueltos = s.filter((x) => x.disp_sueltas).map((x) => { const [uno, varios] = x.caja_controlada ? ['frasco', 'frascos'] : unidadDe(x); return fila(x, x.disp_sueltas, uno, varios); }).join('');
+  const cajas = s.filter((x) => x.caja_controlada && x.disp_cajas).map((x) => fila(x, x.disp_cajas, `caja de ${x.uds_por_caja}`, `cajas de ${x.uds_por_caja}`)).join('');
   const lineasDe = (id) => lineas.filter((l) => l.pedido_id === id);
-  const fichaPedido = (p) => `<div role="button" tabindex="0" class="pedido-stock ${p.completo ? 'listo' : ''}" data-ir="preparar" data-id="${p.id}">
+  const fichaPedido = (p) => `<button type="button" class="pedido-stock ${p.completo ? 'listo' : ''}" data-ir="preparar" data-id="${p.id}">
       <span class="cabeza"><b>${esc(p.etiqueta)}</b><span class="etiqueta ${p.completo ? 'abierto' : 'pendiente'}">${p.completo ? '📦 Armado' : '⏰ Por armar'}</span></span>
-      <table class="tabla compacta mini-tabla">${lineasDe(p.id).map((l) => { const pr = E.productos.get(l.producto_id) || {};
-        return `<tr><td>${punto(pr)}${esc(l.producto)}</td><td class="num">${plural(l.cantidad, l.unidad === 'caja' ? 'caja' : 'unidad', l.unidad === 'caja' ? 'cajas' : 'unidades')}</td></tr>`; }).join('')}</table></div>`;
+      <span class="lineas-ped">${lineasDe(p.id).map((l) => `<span>${esc(l.producto)}: ${plural(l.cantidad, l.unidad === 'caja' ? 'caja' : 'unidad', l.unidad === 'caja' ? 'cajas' : 'unidades')}</span>`).join('')}</span></button>`;
   c.innerHTML = `<section class="tarjeta"><h3>Disponibles en bodega</h3>
-    ${con.length ? `<table class="tabla stock-tabla"><tr><th>Producto</th><th class="num">Frascos sueltos</th><th class="num">Cajas</th></tr>${filas}</table>`
-      : '<p class="nota">No hay nada disponible en bodega.</p>'}</section>
+    <div class="dos-col">
+      <div><h4>Frascos sueltos envasados</h4>${sueltos ? `<table class="tabla compacta stock-tabla">${sueltos}</table>` : '<p class="nota">No hay frascos sueltos.</p>'}</div>
+      <div><h4>Cajas</h4>${cajas ? `<table class="tabla compacta stock-tabla">${cajas}</table>` : '<p class="nota">No hay cajas.</p>'}</div>
+    </div></section>
   <section class="tarjeta"><h3>Stock por retirar</h3>
     ${peds.length ? `<div class="lista">${peds.map(fichaPedido).join('')}</div>` : '<p class="nota">No hay pedidos pendientes ni por retirar.</p>'}</section>
   <section class="tarjeta"><h3>Tambores</h3>${htmlResumenTambores(t)}<p class="chico">${enlazar('Detalle de cada tambor en <b>Tambores</b>.')}</p></section>`;
@@ -1313,6 +1310,8 @@ PANTALLAS.tambores = async () => {
     '<b>Terminado</b>: cuando se acaba. Pasa a <b>Usados</b>, con lo que se envasó de él.',
     '¿Lo anotaste mal? Usa <b>Corregir</b> (kilos o nombre) o <b>Anular</b> (si se ingresó por error).',
   ]) + `<div id="resT"></div>
+  <hr class="mini-sep">
+  <div id="listaT"><p class="nota">Cargando…</p></div>
   <button type="button" class="ancho" id="btnNuevoT">+ Registrar tambores</button>
   <form id="fTambor" class="tarjeta oculto">
     <h3>Registrar tambores</h3>
@@ -1325,7 +1324,7 @@ PANTALLAS.tambores = async () => {
     <label class="check" id="lblAbrir"><input type="checkbox" name="abrir"> Lo abro ahora (voy a envasar de él)</label>
     <div class="fila-botones"><button type="submit">Registrar</button><button type="button" class="sec" id="cancTambor">Cancelar</button></div>
   </form>
-  <div id="listaT"><p class="nota">Cargando…</p></div>`;
+  <div id="usadosT"></div>`;
   const f = $('#fTambor'); let variedad = null;
   const elegirVar = (v) => { variedad = v; f.querySelectorAll('[data-var]').forEach((b) => b.classList.toggle('elegida', b.dataset.var === v)); };
   f.querySelectorAll('[data-var]').forEach((b) => { b.onclick = () => elegirVar(b.dataset.var); });
@@ -1340,35 +1339,35 @@ PANTALLAS.tambores = async () => {
 async function pintarTambores() {
   const lista = await consulta(sb.from('v_tambores').select('*').neq('estado', 'anulado').order('id', { ascending: true }).limit(1000));
   const c = $('#listaT'); if (!c) return;
-  $('#resT').innerHTML = `<section class="tarjeta"><h3>Tambores disponibles</h3>${htmlResumenTambores(lista)}</section>`;
+  $('#resT').innerHTML = `<section class="tarjeta destacada"><h3>Tambores disponibles</h3>${htmlResumenTambores(lista)}</section>`;
   const porVar = (a, b) => (ORDEN_VARIEDAD[a.variedad] ?? 9) - (ORDEN_VARIEDAD[b.variedad] ?? 9) || a.id - b.id;
   const abiertos = lista.filter((t) => t.estado === 'abierto').sort(porVar);
   const cerrados = lista.filter((t) => t.estado === 'sin_abrir').sort(porVar);
   const usados = lista.filter((t) => t.estado === 'cerrado').sort((a, b) => b.id - a.id);
   const miel = (t) => `<span class="miel ${CLASE_VARIEDAD[t.variedad]}"><i class="punto"></i>${VARIEDADES[t.variedad]}</span>`;
   const btn = (t, a, txt, cls = 'sec') => `<button type="button" class="mini ${cls}" data-t="${t.id}" data-accion="${a}">${txt}</button>`;
-  const fichaAbierto = (t) => {
+  // Abiertos en tabla, igual que cerrados y usados; una barrita muestra lo que queda
+  const filaAbierto = (t) => {
     const pct = Math.max(0, Math.min(100, (Number(t.kg_restantes) / Number(t.kg_iniciales)) * 100));
-    return `<div class="ficha tamb-abierto ${CLASE_VARIEDAD[t.variedad]}">
-      <div class="cabeza"><b>${esc(nombreTambor(t))}</b>${miel(t)}</div>
-      <p class="kg">Quedan ${num(t.kg_restantes)} kg <span class="chico">de ${num(t.kg_iniciales)} kg · envasado ${num(t.kg_envasados)} kg</span></p>
-      <div class="barra"><i style="width:${pct}%"></i></div>
-      <div class="fila-botones">${btn(t, 'terminar', 'Terminado', '')}${btn(t, 'corregir', 'Corregir')}${btn(t, 'anular', 'Anular', 'peligro')}</div></div>`;
+    return `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b></td><td>${miel(t)}</td>
+      <td class="num">${num(t.kg_restantes)} kg<span class="barrita"><i style="width:${pct}%"></i></span></td><td class="num">${num(t.kg_iniciales)} kg</td><td class="num">${num(t.kg_envasados)} kg</td>
+      <td class="acciones">${btn(t, 'terminar', 'Terminado', '')}${btn(t, 'corregir', 'Corregir')}${btn(t, 'anular', 'Anular', 'peligro')}</td></tr>`;
   };
   c.innerHTML = `<section class="tarjeta"><h3>🟢 Abiertos <span class="chico">(en uso: ${abiertos.length})</span></h3>
-      ${abiertos.length ? `<div class="tamb-grid">${abiertos.map(fichaAbierto).join('')}</div>` : '<p class="nota">No hay tambores abiertos.</p>'}</section>
+      ${abiertos.length ? `<div class="tabla-scroll"><table class="tabla compacta tamb-tabla"><tr><th>Tambor</th><th>Miel</th><th class="num">Quedan</th><th class="num">Peso</th><th class="num">Envasado</th><th></th></tr>
+        ${abiertos.map(filaAbierto).join('')}</table></div>` : '<p class="nota">No hay tambores abiertos.</p>'}</section>
     <section class="tarjeta"><h3>🔒 Cerrados <span class="chico">(sin usar, disponibles en bodega: ${cerrados.length})</span></h3>
       ${cerrados.length ? `<div class="tabla-scroll"><table class="tabla compacta tamb-tabla"><tr><th>Tambor</th><th>Miel</th><th class="num">Peso</th><th></th></tr>
         ${cerrados.map((t) => `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b></td><td>${miel(t)}</td><td class="num">${num(t.kg_iniciales)} kg</td>
           <td class="acciones">${btn(t, 'abrir', 'Abrir', '')}${btn(t, 'corregir', 'Corregir')}${btn(t, 'anular', 'Anular', 'peligro')}</td></tr>`).join('')}</table></div>`
-      : '<p class="nota">No hay tambores cerrados.</p>'}</section>
-    <section class="tarjeta"><h3>✔️ Usados <span class="chico">(terminados: ${usados.length})</span></h3>
+      : '<p class="nota">No hay tambores cerrados.</p>'}</section>`;
+  $('#usadosT').innerHTML = `<section class="tarjeta"><h3>✔️ Usados <span class="chico">(terminados: ${usados.length})</span></h3>
       ${usados.length ? `<div class="tabla-scroll"><table class="tabla compacta tamb-tabla"><tr><th>Tambor</th><th>Miel</th><th class="num">Peso</th><th class="num">Envasado</th><th class="num">Merma</th><th></th></tr>
         ${usados.map((t) => `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b></td><td>${miel(t)}</td><td class="num">${num(t.kg_iniciales)} kg</td>
           <td class="num">${num(t.kg_envasados)} kg</td><td class="num">${num(t.merma_kg)} kg</td>
           <td class="acciones">${btn(t, 'reabrir', 'Reabrir')}${btn(t, 'corregir', 'Corregir')}</td></tr>`).join('')}</table></div>`
       : '<p class="nota">Todavía no hay tambores usados.</p>'}</section>`;
-  c.querySelectorAll('[data-t]').forEach((b) => { b.onclick = () => encolar(() => accionTambor(b.dataset.accion, Number(b.dataset.t), lista)); });
+  app.querySelectorAll('[data-t]').forEach((b) => { b.onclick = () => encolar(() => accionTambor(b.dataset.accion, Number(b.dataset.t), lista)); });
 }
 
 // Si al abrir un tambor ya hay otros abiertos de la misma miel, pregunta si se terminaron
