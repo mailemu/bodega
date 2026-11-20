@@ -366,23 +366,34 @@ function tamborDe(variedad) {
 
 const PANTALLAS = {};
 // reemplazar: tras retirar, anular o cargar, la pantalla anterior ya no sirve; "atrás" no debe volver a ella
-function ir(p, ctx = {}, { historial = true, reemplazar = false } = {}) {
+function ir(p, ctx = {}, opts = {}) {
+  const { historial = true, reemplazar = false, forzar = false, desdeAtras = false } = opts;
+  // Si hay algo sin guardar, pregunta antes de salir
+  if (!forzar && E.sinGuardar && E.sinGuardar()) {
+    confirmar('Se perderá lo que no guardaste.', { titulo: '¿Seguro que quieres salir?', aceptar: 'Salir', cancelar: E.continuar || 'Seguir aquí' })
+      .then((ok) => {
+        if (ok) ir(p, ctx, { ...opts, forzar: true });
+        else if (desdeAtras && E.estado) history.pushState(E.estado, '', '#' + E.pantalla); // el "atrás" del celular ya se movió: volver
+      });
+    return;
+  }
+  E.sinGuardar = null; E.continuar = null;
   if (p === 'codigo' && !ctx.codigo) E.volverA = null; // entrada desde el menú: no volver a otra pantalla
   const desde = E.pantalla;
-  // Si sale de Envasar con un frasco pistoleado sin cantidad, se registra como 1
-  const pendiente = desde === 'envasar' && E.ctx && E.ctx.pend;
-  if (pendiente) encolar(async () => { await envasar(pendiente.p, 1, 0); aviso(`${pendiente.p.nombre}: se registró 1 frasco envasado.`, 'ok'); });
   E.pantalla = p; E.ctx = { ...ctx }; E.log = []; E.mult = 1; E.multEditando = false; E.avisosVistos = new Set();
   if (reemplazar) history.replaceState({ p, ctx, desde: history.state && history.state.desde }, '', '#' + p);
   else if (historial) history.pushState({ p, ctx, desde }, '', '#' + p);
+  E.estado = history.state;
   window.scrollTo(0, 0); pintarCabecera();
   Promise.resolve(PANTALLAS[p](E.ctx)).then(activarGuias).catch((e) => aviso(mensaje(e), 'error'));
 }
 window.addEventListener('popstate', (ev) => {
   if (!E.usuaria) return;
   const s = ev.state || { p: 'inicio', ctx: {} };
-  ir(PANTALLAS[s.p] ? s.p : 'inicio', s.ctx || {}, { historial: false });
+  ir(PANTALLAS[s.p] ? s.p : 'inicio', s.ctx || {}, { historial: false, desdeAtras: true });
 });
+// Cerrar o recargar la página con algo sin guardar: el navegador pregunta
+window.addEventListener('beforeunload', (ev) => { if (E.sinGuardar && E.sinGuardar()) { ev.preventDefault(); ev.returnValue = ''; } });
 document.addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-ir]'); if (!b || !E.usuaria) return;
   ev.preventDefault();
@@ -499,62 +510,116 @@ PANTALLAS.inicio = async () => {
 // ───────── Envasar ─────────
 
 PANTALLAS.envasar = () => {
-  app.innerHTML = guia('envasar_v2', [
+  E.ctx.borrador = []; E.ctx.activa = null;
+  app.innerHTML = guia('envasar_v3', [
     'Revisa que cada variedad tenga su tambor en uso (abajo). Si no, ábrelo en <b>Tambores</b>.',
-    'Pistolea el <b>frasco</b> y después escribe <b>cuántos</b> son. Si pistoleas otro producto sin escribir la cantidad, el anterior cuenta como 1 (para ir uno por uno).',
+    'Pistolea el <b>frasco</b>: queda en la lista con cantidad 1. Si son más, cámbiala con <b>−</b> y <b>+</b> (o escribe el número) y toca <b>Listo</b>. Si pistoleas otro, sigue con el siguiente.',
     'Las <b>cajas</b> se pistolean una por una: cada lectura suma una caja.',
     'Lo que no tiene código (baldes): toca <b>Búsqueda manual</b>, escribe "balde" y elige la variedad.',
-    'Cada registro descuenta los kilos del tambor y suma al stock. ¿Te equivocaste? Toca <b>Deshacer</b> en esa línea.',
+    'Al terminar, toca <b>Guardar</b>: recién ahí se descuentan los kilos del tambor y se suma al stock. La <b>×</b> quita una línea antes de guardar.',
   ]) + `
-  ${htmlPistola('Pistolea el frasco o la caja', '', '<div id="pend"></div>')}
+  ${htmlPistola('Pistolea el frasco o la caja', '', htmlBorrador())}
   <h3>Tambores en uso</h3>
   <div class="usos" id="usos"></div>`;
   pintarUsos();
-  activarPistola(leerEnvasar, async (p) => { if (E.ctx.pend) await confirmarPendiente(1); elegirParaEnvasar(p); });
+  prepararBorrador({ continuar: 'Continuar envasando', guardar: guardarEnvasado, conPanel: true });
+  activarPistola(leerEnvasar, async (p) => agregarEnvasado(p, 'suelta'));
 };
 
-// Envasar: primero se pistolea el producto y después la cantidad. Si se pistolea otro sin escribirla, el anterior cuenta 1.
-// Las cajas no preguntan: cada lectura es una caja.
-async function leerEnvasar(cod) {
-  if (E.ctx.pend && /^\d{1,4}$/.test(cod)) return confirmarPendiente(cod); // cantidad escrita en el recuadro (computador)
-  if (E.ctx.pend) await confirmarPendiente(1);
-  const { p, tipo } = buscarCodigo(cod);
-  if (tipo === 'caja') return envasar(p, 0, 1);
-  elegirParaEnvasar(p);
+// ───────── Lista sin guardar (Envasar y Encajar) ─────────
+// Lo pistoleado queda en una lista; recién al tocar Guardar se graba. Si se sale sin guardar, la app avisa.
+const htmlBorrador = () => '<div id="pend"></div><div id="barGuardar"></div><ul id="borr" class="log borrador"></ul>';
+function prepararBorrador({ continuar, guardar, conPanel = false }) {
+  E.ctx.opBorr = { guardar, conPanel };
+  E.sinGuardar = () => (E.ctx.borrador || []).length; E.continuar = continuar;
+  pintarBorrador();
 }
-function elegirParaEnvasar(p) {
-  if (!p.variedad) throw new Error('El pack se arma en Encajar.');
-  if (!tamborDe(p.variedad)) throw new Error(`No hay tambor abierto de ${VARIEDADES[p.variedad]}: ábrelo en Tambores antes de envasar.`);
-  E.ctx.pend = { p }; pitido(true); pintarPendiente(); enfocarScan();
+const nombreUnidad = (l, n = l.n) => (l.unidad === 'caja' ? (n === 1 ? 'caja' : 'cajas') : l.unidad === 'pack' ? (n === 1 ? 'pack' : 'packs')
+  : l.p.uds_por_caja ? (n === 1 ? 'frasco' : 'frascos') : (n === 1 ? 'balde' : 'baldes'));
+function pintarBorrador() {
+  const b = E.ctx.borrador || []; const op = E.ctx.opBorr || {};
+  const ul = $('#borr'); const bar = $('#barGuardar'); if (!ul || !bar) return;
+  bar.innerHTML = b.length ? `<div class="guardar-bar"><span class="chico">${plural(b.length, 'línea sin guardar', 'líneas sin guardar')}</span>
+    <button type="button" class="mini" id="btnGuardar">💾 Guardar</button></div>` : '';
+  ul.innerHTML = b.map((l) => `<li class="${CLASE_VARIEDAD[l.p.variedad] || ''} ${E.ctx.activa === l.id ? 'activa' : ''}">
+    <div class="txt"><i class="punto"></i>${esc(l.p.nombre)}</div>
+    <div class="cant-mini"><button type="button" class="mini sec" data-menos="${l.id}" aria-label="Uno menos">−</button><b>${l.n}</b><button type="button" class="mini sec" data-mas="${l.id}" aria-label="Uno más">+</button>
+      <span class="chico">${nombreUnidad(l)}</span><button type="button" class="cruz" data-quitar-b="${l.id}" aria-label="Quitar">×</button></div></li>`).join('');
+  const linea = (id) => b.find((x) => x.id === Number(id));
+  ul.querySelectorAll('[data-menos]').forEach((x) => { x.onclick = () => { const l = linea(x.dataset.menos); if (l.n > 1) l.n -= 1; pintarBorrador(); enfocarScan(); }; });
+  ul.querySelectorAll('[data-mas]').forEach((x) => { x.onclick = () => { const l = linea(x.dataset.mas); if (l.n < 500) l.n += 1; pintarBorrador(); enfocarScan(); }; });
+  ul.querySelectorAll('[data-quitar-b]').forEach((x) => { x.onclick = () => quitarDelBorrador(Number(x.dataset.quitarB)); });
+  const g = $('#btnGuardar'); if (g) g.onclick = () => encolar(guardarBorrador);
+  if (op.conPanel) pintarPanelCantidad();
 }
-function pintarPendiente() {
+function quitarDelBorrador(id) {
+  E.ctx.borrador = E.ctx.borrador.filter((x) => x.id !== id);
+  if (E.ctx.activa === id) E.ctx.activa = null;
+  pintarBorrador(); enfocarScan();
+}
+// Suma a la lista: los frascos van en una línea nueva (con su cantidad); cajas y packs se juntan por producto
+function agregarAlBorrador(p, unidad, { juntar = true, activar = false } = {}) {
+  const b = E.ctx.borrador;
+  let l = juntar ? b.find((x) => x.p.id === p.id && x.unidad === unidad) : null;
+  if (l) l.n += 1; else { l = { id: ++E.logId, p, unidad, n: 1 }; b.unshift(l); }
+  E.ctx.activa = activar ? l.id : null;
+  pitido(true); pintarBorrador(); enfocarScan();
+}
+async function guardarBorrador() {
+  const op = E.ctx.opBorr; const b = [...E.ctx.borrador].reverse(); if (!b.length) return; // en el orden en que se pistoleó
+  E.ctx.activa = null;
+  for (const l of b) {
+    await op.guardar(l); // si una falla, se detiene y las que quedan siguen en la lista
+    E.ctx.borrador = E.ctx.borrador.filter((x) => x !== l); pintarBorrador();
+  }
+  aviso(`Guardado: ${plural(b.length, 'línea', 'líneas')}.`, 'ok');
+}
+
+// Panel de cantidad de Envasar: el último frasco pistoleado, con − y + (se guarda solo al pistolear el siguiente)
+function pintarPanelCantidad() {
   const c = $('#pend'); if (!c) return;
-  const pe = E.ctx.pend;
-  if (!pe) { c.innerHTML = ''; return; }
-  const varios = pe.p.uds_por_caja ? 'frascos' : 'baldes';
-  c.innerHTML = `<div class="pendiente-cant ${CLASE_VARIEDAD[pe.p.variedad] || ''}">
-    <div class="que"><b>${esc(pe.p.nombre)}</b><span class="chico">¿Cuántos ${varios}? Si sigues pistoleando, cuenta 1.</span></div>
-    <div class="fila"><input id="cantPend" type="text" inputmode="numeric" autocomplete="off" placeholder="1" aria-label="Cuántos ${varios}">
-      <button type="button" id="okPend">Listo</button><button type="button" class="sec" id="noPend">Cancelar</button></div></div>`;
+  const l = (E.ctx.borrador || []).find((x) => x.id === E.ctx.activa);
+  if (!l) { c.innerHTML = ''; return; }
+  c.innerHTML = `<div class="pendiente-cant ${CLASE_VARIEDAD[l.p.variedad] || ''}">
+    <div class="que"><b>${esc(l.p.nombre)}</b></div>
+    <div class="cant-caja"><span class="etq">Cantidad</span>
+      <div class="fila"><button type="button" class="sec paso" id="cMenos" aria-label="Uno menos">−</button>
+        <input id="cantPend" type="text" inputmode="numeric" autocomplete="off" value="${l.n}" aria-label="Cantidad">
+        <button type="button" class="sec paso" id="cMas" aria-label="Uno más">+</button>
+        <button type="button" id="okPend">Listo</button><button type="button" class="cruz" id="noPend" aria-label="Quitar">×</button></div></div></div>`;
   const i = $('#cantPend');
+  const fijar = (n) => { if (Number.isInteger(n) && n >= 1 && n <= 500) { l.n = n; i.value = n; const v = $(`#borr [data-mas="${l.id}"]`); if (v) v.previousElementSibling.textContent = n; } };
+  $('#cMenos').onclick = () => fijar(l.n - 1);
+  $('#cMas').onclick = () => fijar(l.n + 1);
+  i.oninput = () => { const n = parseInt(i.value, 10); if (n >= 1 && n <= 500) fijar(n); };
   i.onkeydown = (ev) => {
     if (ev.key !== 'Enter') return;
-    ev.preventDefault(); const v = i.value.trim(); i.value = '';
-    // Si la pistola escribió aquí un código, el anterior cuenta 1 y se lee el nuevo
-    if (v.length >= 6) encolar(async () => { await confirmarPendiente(1); await leerEnvasar(v); });
-    else encolar(() => confirmarPendiente(v));
+    ev.preventDefault(); const v = i.value.trim();
+    if (v.length >= 6) { i.value = l.n; encolar(() => leerEnvasar(v)); return; } // la pistola escribió aquí: es otro producto
+    const n = Number(v); if (!Number.isInteger(n) || n < 1 || n > 500) { aviso('Escribe una cantidad entre 1 y 500.', 'error'); return; }
+    fijar(n); E.ctx.activa = null; pintarBorrador(); enfocarScan();
   };
-  $('#okPend').onclick = () => encolar(() => confirmarPendiente($('#cantPend') ? $('#cantPend').value : ''));
-  $('#noPend').onclick = () => { E.ctx.pend = null; pintarPendiente(); enfocarScan(); };
+  $('#okPend').onclick = () => { const n = parseInt(i.value, 10); if (n >= 1 && n <= 500) fijar(n); E.ctx.activa = null; pintarBorrador(); enfocarScan(); };
+  $('#noPend').onclick = () => quitarDelBorrador(l.id);
 }
-async function confirmarPendiente(v) {
-  const pe = E.ctx.pend; if (!pe) return;
-  const n = String(v ?? '').trim() === '' ? 1 : Number(String(v).trim());
-  if (!Number.isInteger(n) || n < 1 || n > 500) throw new Error('Escribe una cantidad entre 1 y 500.');
-  E.ctx.pend = null; pintarPendiente();
-  await envasar(pe.p, n, 0);
-  enfocarScan();
+
+// Envasar: el frasco entra con cantidad 1; las cajas suman una por lectura. En el computador, un número + Enter en el recuadro cambia la cantidad.
+async function leerEnvasar(cod) {
+  const activa = (E.ctx.borrador || []).find((x) => x.id === E.ctx.activa);
+  if (activa && /^\d{1,3}$/.test(cod)) {
+    const n = Number(cod); if (n < 1 || n > 500) throw new Error('Escribe una cantidad entre 1 y 500.');
+    activa.n = n; E.ctx.activa = null; pintarBorrador(); return;
+  }
+  const { p, tipo } = buscarCodigo(cod);
+  agregarEnvasado(p, tipo === 'caja' ? 'caja' : 'suelta');
 }
+function agregarEnvasado(p, unidad) {
+  if (!p.variedad) throw new Error('El pack se arma en Encajar.');
+  if (!tamborDe(p.variedad)) throw new Error(`No hay tambor abierto de ${VARIEDADES[p.variedad]}: ábrelo en Tambores antes de envasar.`);
+  if (unidad === 'caja') agregarAlBorrador(p, 'caja');
+  else agregarAlBorrador(p, 'suelta', { juntar: false, activar: true });
+}
+const guardarEnvasado = (l) => envasar(l.p, l.unidad === 'caja' ? 0 : l.n, l.unidad === 'caja' ? l.n : 0);
 
 const CLASE_VARIEDAD = { ulmo: 'v-ulmo', bosque_nativo: 'v-bn', quillay: 'v-quillay' };
 // Mini barra con lo que queda del tambor, en el color de la variedad
@@ -590,8 +655,8 @@ async function envasar(p, sueltas, cajas) {
   const r = await rpc('op_envasar', { p_producto: p.id, p_tambor: t.id, p_sueltas: sueltas, p_cajas: cajas });
   const i = E.tambores.findIndex((x) => x.id === r.tambor.id); if (i >= 0) E.tambores[i] = r.tambor;
   pintarUsos(); avisosDe(r);
-  const que = cajas ? `+${plural(cajas, 'caja', 'cajas')} de ${p.uds_por_caja}` : !p.uds_por_caja ? `+${plural(sueltas, 'balde', 'baldes')}` : sueltas === 1 ? '+1 frasco' : `+${sueltas} frascos`;
-  registrar(true, `${p.nombre} ${que}. Stock: ${textoStock(p, r.stock.sueltas, r.stock.cajas)}. Tambor ${nombreTambor(r.tambor)}: quedan ${num(r.tambor.kg_restantes)} kg`,
+  const que = cajas ? `+${plural(cajas, 'caja', 'cajas')}` : !p.uds_por_caja ? `+${plural(sueltas, 'balde', 'baldes')}` : sueltas === 1 ? '+1 frasco' : `+${sueltas} frascos`;
+  registrar(true, `${p.nombre} ${que}`,
     { op: r.operacion, alDeshacer: async () => { await cargarTambores(); pintarUsos(); } });
 }
 
@@ -605,11 +670,14 @@ PANTALLAS.encajar = () => {
     '<b>Packs 3 × 300 g</b>: arma la cajita con 1 frasco de Ulmo, 1 de Bosque Nativo y 1 de Quillay de 300 g y pistolea el <b>código de la cajita</b>.',
     '<b>Cajas de 10</b> (500 g y 1 kg) y cualquier caja sin código o sin etiqueta: usa el recuadro de abajo, <b>Encajar sin pistolear</b>. Elige el producto y toca <b>Añadir caja</b> una vez por cada caja.',
     'También puedes tocar <b>Búsqueda manual</b> y escribir el código o el nombre del producto (ej.: "ulmo 1kg", "pack"): las opciones aparecen mientras escribes.',
-    'Cada caja suma 1 caja al stock y descuenta sus frascos sueltos (12 o 10; el pack, 1 de cada variedad). ¿Te equivocaste? Toca <b>Deshacer</b>.',
-  ]) + htmlPistola('Pistolea la caja o la cajita del pack') + `
+    'Lo que pistoleas queda en la lista; con <b>−</b> y <b>+</b> corriges la cantidad y la <b>×</b> quita una línea.',
+    'Al terminar, toca <b>Guardar</b>: cada caja suma 1 caja al stock y descuenta sus frascos sueltos (12 o 10; el pack, 1 de cada variedad).',
+  ]) + htmlPistola('Pistolea la caja o la cajita del pack', '', htmlBorrador()) + `
   <section class="tarjeta"><h3>Encajar sin pistolear</h3><p class="nota">Para cajas sin código o etiqueta.</p>
     <div class="fila-botones"><select id="encProd" aria-label="Producto a encajar">${encajables.map((p) => `<option value="${p.id}" ${p.id === E.ultimoEncajable ? 'selected' : ''}>${esc(p.nombre)}${p.id === 'pack' ? '' : ` · caja de ${p.uds_por_caja}`}</option>`).join('')}</select>
     <button type="button" id="encManual">Añadir caja</button></div></section>`;
+  E.ctx.borrador = []; E.ctx.activa = null;
+  prepararBorrador({ continuar: 'Continuar encajando', guardar: guardarEncajado });
   $('#encProd').onchange = () => { E.ultimoEncajable = $('#encProd').value; };
   // Cada toque agrega una caja (se graban en orden, aunque se toque rápido)
   $('#encManual').onclick = () => { const p = E.productos.get($('#encProd').value); E.ultimoEncajable = p.id; encolar(() => (p.id === 'pack' ? armarPack() : encajar(p))); };
@@ -635,19 +703,20 @@ async function avisoEncajar(clave, titulo, html) {
   return ok;
 }
 
+// Pistolear o "Añadir caja" suma a la lista; se graba al tocar Guardar
 async function encajar(p) {
   const ok = await avisoEncajar('enc_' + p.id, 'Encajar',
-    `Vas a encajar <b>${esc(p.nombre)}</b> en una caja de ${p.uds_por_caja}.<br>Se suma 1 caja y se descuentan <b>${p.uds_por_caja} frascos sueltos</b> del inventario.`);
-  if (!ok) return;
-  const r = await rpc('op_encajar', { p_producto: p.id, p_cajas: 1 });
-  avisosDe(r); registrar(true, `${p.nombre}: +1 caja (−${p.uds_por_caja} sueltas). Stock: ${textoStock(p, r.stock.sueltas, r.stock.cajas)}`, { op: r.operacion });
+    `Vas a encajar <b>${esc(p.nombre)}</b> en una caja de ${p.uds_por_caja}.<br>Al guardar se suma 1 caja y se descuentan <b>${p.uds_por_caja} frascos sueltos</b> del inventario.`);
+  if (ok) agregarAlBorrador(p, 'caja');
 }
 async function armarPack() {
   const ok = await avisoEncajar('pack', 'Armar pack',
-    'Vas a armar <b>1 Pack Variedades 3 × 300 g</b>.<br>Se suma 1 pack y se descuenta <b>1 frasco suelto</b> de Ulmo, de Bosque Nativo y de Quillay 300 g.');
-  if (!ok) return;
-  const r = await rpc('op_armar_pack', { p_cantidad: 1 });
-  avisosDe(r); registrar(true, `+1 pack (${plural(r.stock?.sueltas, 'pack armado', 'packs armados')}). Se restó 1 frasco de cada 300 g`, { op: r.operacion });
+    'Vas a armar <b>1 Pack Variedades 3 × 300 g</b>.<br>Al guardar se suma 1 pack y se descuenta <b>1 frasco suelto</b> de Ulmo, de Bosque Nativo y de Quillay 300 g.');
+  if (ok) agregarAlBorrador(E.productos.get('pack'), 'pack');
+}
+async function guardarEncajado(l) {
+  const r = l.unidad === 'pack' ? await rpc('op_armar_pack', { p_cantidad: l.n }) : await rpc('op_encajar', { p_producto: l.p.id, p_cajas: l.n });
+  avisosDe(r); registrar(true, `${l.p.nombre} +${plural(l.n, nombreUnidad(l, 1), nombreUnidad(l, 2))}`, { op: r.operacion });
 }
 
 // ───────── Pedidos ─────────
@@ -779,7 +848,7 @@ async function preparar(id, p, unidad, desarmar = false, cantidad = 1) {
     const i = E.ctx.lineas.findIndex((x) => x.id === r.linea.id); if (i >= 0) E.ctx.lineas[i] = r.linea;
     E.ctx.pedido = r.pedido; pintarPedido();
   }
-  registrar(true, `${p.nombre} (${cantidad > 1 ? cantidad + ' ' : ''}${unidad === 'caja' ? (cantidad > 1 ? 'cajas' : 'caja') : (cantidad > 1 ? 'unidades' : 'unidad')}): ${r.linea.faltan ? `faltan ${r.linea.faltan}` : 'línea completa'}`,
+  registrar(true, `${p.nombre} +${cantidad} ${unidad === 'caja' ? (cantidad > 1 ? 'cajas' : 'caja') : (cantidad > 1 ? 'unidades' : 'unidad')}${r.linea.faltan ? ` · faltan ${r.linea.faltan}` : ' · completo'}`,
     { op: r.operacion, alDeshacer: () => cargarPedido(id) });
   if (r.pedido.completo) aviso('Pedido armado: pasa a «Por retirar».', 'ok');
 }
@@ -1035,12 +1104,34 @@ PANTALLAS.pedido = async ({ id } = {}) => {
     const t = $('#cab .titulo'); if (t) t.textContent = 'Editar pedido';
   }
   pintarDestino(); pintarArchivo();
-  app.querySelectorAll('[data-np], [data-pack]').forEach((i) => { i.oninput = actualizarResumenPedido; });
+  app.querySelectorAll('[data-np], [data-pack]').forEach((i) => {
+    i.oninput = actualizarResumenPedido;
+    // Si la pistola escribe en una casilla de cantidad (13 números + Enter), es un producto: se devuelve el valor y se suma el pistoleado
+    i.onfocus = () => { i.dataset.antes = i.value; };
+    i.onkeydown = (ev) => {
+      if (ev.key !== 'Enter' || i.value.length < 8 || !$('#scan')) return;
+      ev.preventDefault(); const cod = i.value; i.value = i.dataset.antes || ''; actualizarResumenPedido();
+      encolar(async () => { const { p, tipo } = buscarCodigo(cod); sumarPistoleadoAlPedido(p, tipo === 'caja' ? 'caja' : 'unidad'); });
+    };
+  });
   actualizarResumenPedido();
+  // Aviso al salir si se escribió algo y no se creó (o guardó) el pedido
+  const foto = () => JSON.stringify([lineasPedido(), packsPedido(), ($('#npNota') || {}).value]);
+  const inicial = foto(); E.sinGuardar = () => !!$('#npCrear') && foto() !== inicial; E.continuar = 'Seguir con el pedido';
   $('#npCrear').onclick = () => encolar(id ? guardarEdicionPedido : crearPedido);
   const cl = await consulta(sb.from('v_clientes').select('*').order('ultimo', { ascending: false }).limit(200));
   const dl = $('#clientes'); if (dl) dl.innerHTML = cl.map((c) => `<option value="${esc(c.cliente)}">`).join('');
 };
+
+// Un producto pistoleado en Nuevo pedido suma 1 en su casilla (la cajita de 300 g, en Packs)
+function sumarPistoleadoAlPedido(p, unidad) {
+  const ok = p.id === 'pack' ? sumarCampo('[data-pack="cajita"]', 1)
+    : sumarCampo(`[data-np="${p.id}"][data-unidad="${unidad === 'caja' && p.caja_controlada ? 'caja' : 'unidad'}"]`, 1);
+  if (!ok) throw new Error(`${p.nombre} no está en la lista de productos.`);
+  if (p.id === 'pack') $('#secPacks').open = true; else $('#secProd').open = true;
+  registrar(true, `${p.nombre} +1 ${unidad === 'caja' && p.caja_controlada ? 'caja' : p.id === 'pack' ? 'pack' : 'unidad'}`);
+  actualizarResumenPedido();
+}
 
 // Suma una cantidad a un campo del pedido
 function sumarCampo(sel, n) { const i = app.querySelector(sel); if (i) i.value = (parseInt(i.value, 10) || 0) + n; return !!i; }
@@ -1050,6 +1141,12 @@ function agregarNota(texto) { const nota = $('#npNota'); if (!nota.value.include
 function pintarArchivo() {
   const np = E.ctx.np; const c = $('#npArchivo'); if (!c) return;
   const ml = np.destino === 'mercado_libre'; const cech = np.destino === 'creado_en_chile';
+  if (np.destino === 'berni' || np.destino === 'cliente') { // pedidos que se arman a mano: se pueden pistolear
+    c.innerHTML = `<section class="tarjeta">${htmlPistola('Pistolea los productos del pedido (o escríbelos abajo)')}</section>`;
+    activarPistola(async (cod) => { const { p, tipo } = buscarCodigo(cod); sumarPistoleadoAlPedido(p, tipo === 'caja' ? 'caja' : 'unidad'); },
+      async (p) => sumarPistoleadoAlPedido(p, 'unidad'));
+    return;
+  }
   if (!ml && !cech) { c.innerHTML = ''; return; }
   c.innerHTML = `<section class="tarjeta subir">
     ${cech ? `<p class="recordatorio">📌 ${esc(RECORDATORIO_CECH)}</p>` : ''}
@@ -1162,7 +1259,7 @@ async function crearPedido() {
     const pk = packsPedido(); if (pk.length) await rpc('pedido_packs', { p_pedido: r.pedido.id, p_packs: pk });
     const rp = repartoDe(np); if (rp.length) await rpc('pedido_reparto', { p_pedido: r.pedido.id, p_reparto: rp });
     pitido(true); aviso(`${r.pedido.etiqueta} creado: ${resumenCant(r.pedido.cajas, r.pedido.unidades)}`, 'ok');
-    ir('preparar', { id: r.pedido.id }, { reemplazar: true });
+    E.sinGuardar = null; ir('preparar', { id: r.pedido.id }, { reemplazar: true });
   } catch (e) { $('#npCrear').disabled = false; throw e; }
 }
 async function guardarEdicionPedido() {
@@ -1176,7 +1273,7 @@ async function guardarEdicionPedido() {
     await rpc('pedido_packs', { p_pedido: np.editar, p_packs: packsPedido() });
     await rpc('pedido_reparto', { p_pedido: np.editar, p_reparto: repartoDe(np) });
     pitido(true); aviso(`${r.pedido.etiqueta} guardado: ${resumenCant(r.pedido.cajas, r.pedido.unidades)}`, 'ok');
-    volverAPantalla('preparar', { id: np.editar });
+    E.sinGuardar = null; volverAPantalla('preparar', { id: np.editar });
   } catch (e) { $('#npCrear').disabled = false; throw e; }
 }
 
@@ -1309,6 +1406,7 @@ PANTALLAS.retiro = async () => {
   <button type="button" class="grande accion" id="retOk" disabled><b>Rebajar del stock</b><span id="retRes">Pistolea lo que se lleva</span></button>
   <datalist id="clientes"></datalist>`;
   pintarCarro();
+  E.sinGuardar = () => E.ctx.carro.some((l) => l.cantidad > 0); E.continuar = 'Seguir con el retiro';
   $('#retQuien').oninput = pintarCarro;
   $('#retOk').onclick = () => encolar(guardarRetiroManual);
   activarPistola(async (cod) => { const { p, tipo } = buscarCodigo(cod); sumarAlCarro(p, tipo === 'caja' ? 'caja' : 'unidad'); },
@@ -1765,6 +1863,7 @@ PANTALLAS.conteo = async () => {
   t.querySelectorAll('input').forEach((i) => { i.oninput = () => { $('#btnGuardarConteo').classList.add('oculto'); $('#cambios').innerHTML = ''; }; });
   $('#btnRevisar').onclick = revisarConteo;
   $('#btnGuardarConteo').onclick = () => encolar(guardarConteo);
+  E.sinGuardar = () => leerConteo().length; E.continuar = 'Seguir contando';
 };
 
 // Un campo en blanco = no contado: conserva lo que la app tiene en ese campo
@@ -1806,7 +1905,7 @@ async function guardarConteo() {
     await rpc('op_anular', { p_operacion: r.operacion, p_motivo: `Conteo deshecho al momento por ${E.nombre}` });
     aviso('Conteo deshecho.', 'ok'); if (E.pantalla === 'stock') ir('stock', {}, { historial: false });
   }) });
-  ir('stock', {}, { reemplazar: true });
+  ir('stock', {}, { reemplazar: true, forzar: true });
 }
 
 // ───────── Registrar código ─────────
@@ -1921,7 +2020,7 @@ PANTALLAS.ayuda = () => {
     <p>Si alguien pasa a la sala y se lleva algo sin pedido, usa <b>Retiro manual</b>: pistolea lo que se lleva, escribe quién lo retiró y se rebaja al tiro del stock.</p>
     <p class="chico">En <b>Stock</b> se ve, por producto, cuánto está en pedidos pendientes y cuánto armado por retirar.</p></section>
   <section class="tarjeta"><h3>Varios iguales de una vez</h3>
-    <p>En <b>Envasar</b>, pistolea el frasco y después escribe cuántos son; si pistoleas otro sin escribirla, cuenta 1. Las cajas se pistolean una por una.</p>
+    <p>En <b>Envasar</b>, pistolea el frasco: entra con cantidad 1 y la cambias con − y +. Las cajas se pistolean una por una. En Envasar y Encajar lo pistoleado queda en una lista y se graba al tocar <b>Guardar</b>; si sales sin guardar, la app te avisa.</p>
     <p>Al preparar un pedido y en Encajar, toca ×10, ×12 u Otra (la cantidad se escribe ahí mismo) y pistolea un solo frasco o caja: esa lectura cuenta por esa cantidad. Después vuelve sola a ×1.</p>
     <p class="chico">Los frascos de 500 g y 1 kg tienen código y se pistolean igual que los demás. Sus cajas de 10 casi nunca llevan etiqueta: se registran en <b>Encajar</b>, en el recuadro "Encajar sin pistolear".</p></section>
   <section class="tarjeta"><h3>Nombres y avisos</h3>
