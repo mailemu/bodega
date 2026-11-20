@@ -332,3 +332,23 @@ textarea:focus { outline: 2px solid var(--miel); border-color: var(--miel); }
 details.anio { border-top: 1px solid var(--borde); padding: 6px 0; }
 details.anio > summary { cursor: pointer; padding: 6px 0; color: var(--petroleo); font-size: 16px; }
 details.anio[open] > summary { margin-bottom: 4px; }
+/* Menú en grilla proporcional: 4 por fila en el computador, 2 y 2 en el celular */
+.menu { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 760px) { .menu { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 480px) {
+  .menu .grande { padding: 12px 12px; min-height: 92px; }
+  .menu .grande b { font-size: 17px; }
+  .menu .grande span { font-size: 12.5px; }
+}
+/* Botones de acción sueltos: proporcionados en pantallas anchas */
+@media (min-width: 900px) {
+  main > button.ancho, main > .grande, .separador-retiro .grande, main > #desc .ancho { max-width: 560px; }
+}
+/* Envasar: cantidad después de pistolear */
+.pendiente-cant { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 10px 0; padding: 12px 14px;
+  border-radius: 12px; border-left: 6px solid var(--var, var(--miel)); background: var(--var-suave, var(--miel-suave)); }
+.pendiente-cant .que { display: flex; flex-direction: column; gap: 2px; }
+.pendiente-cant .que b { font: 600 18px Signika, system-ui, sans-serif; color: var(--petroleo); }
+.pendiente-cant .fila { display: flex; gap: 8px; align-items: center; }
+.pendiente-cant input { width: 90px; min-height: 44px; text-align: center; font-size: 18px; }
+.cant-carro { width: 80px; min-height: 40px; padding: 6px; text-align: center; }
