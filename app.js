@@ -139,15 +139,169 @@ function mensaje(e) {
   return m;
 }
 
-async function rpc(fn, args = {}) {
+// ───────── Sin conexión ─────────
+// La app queda guardada en el aparato (sw.js). Lo que se lee con señal se guarda y se usa cuando no hay señal.
+// Envasar, Encajar, Tambores, Conteo y Retiro manual se guardan en una cola en el aparato y se suben solos al volver la señal.
+// Lo demás (pedidos, facturas, armar pedidos) necesita internet.
+const SIN_RED_OK = new Set(['op_envasar', 'op_encajar', 'op_armar_pack', 'tambor_alta', 'tambor_abrir', 'tambor_cerrar', 'tambor_reabrir',
+  'tambor_corregir', 'tambor_anular', 'op_conteo', 'op_retiro_manual', 'op_anular']);
+const TEXTO_FN = { op_envasar: 'envasado', op_encajar: 'encajado', op_armar_pack: 'pack armado', tambor_alta: 'tambor registrado', tambor_abrir: 'tambor abierto',
+  tambor_cerrar: 'tambor terminado', tambor_reabrir: 'tambor reabierto', tambor_corregir: 'tambor corregido', tambor_anular: 'tambor anulado',
+  op_conteo: 'conteo', op_retiro_manual: 'retiro manual', op_anular: 'deshacer' };
+const esDeRed = (e) => /failed to fetch|networkerror|load failed|network request|fetch failed|err_internet/i.test((e && e.message) || String(e));
+const leerJSON = (k, def) => { try { const v = leer(k); return v ? JSON.parse(v) : def; } catch { return def; } };
+const Cola = {
+  leer: () => leerJSON(`cola_${E.usuaria}`, []),
+  escribir: (c) => { guardar(`cola_${E.usuaria}`, JSON.stringify(c)); pintarEstadoRed(); },
+  errores: () => leerJSON(`cola_err_${E.usuaria}`, []),
+  escribirErrores: (c) => { guardar(`cola_err_${E.usuaria}`, JSON.stringify(c)); pintarEstadoRed(); },
+};
+// Lo creado sin señal lleva un número provisorio (negativo); al subir se cambia por el real
+const nuevoIdLocal = () => { const n = Number(leer('id_local') || 0) - 1; guardar('id_local', String(n)); return n; };
+const mapaIds = () => leerJSON('mapa_ids', {});
+
+async function rpcRed(fn, args) {
   const { data, error } = await sb.rpc(fn, args);
   if (error) { const e = new Error(error.message || 'Error'); e.codigo = error.hint; throw e; }
   return data;
 }
+async function rpc(fn, args = {}) {
+  if (fn === 'op_anular' && args.p_operacion < 0) { // deshacer algo guardado sin señal
+    if (E.subiendo === args.p_operacion) throw new Error('Se está subiendo justo ahora: intenta deshacer en un momento.');
+    const c = Cola.leer(); const i = c.findIndex((x) => x.op === args.p_operacion);
+    if (i >= 0) { c.splice(i, 1); Cola.escribir(c); return { operacion: nuevoIdLocal(), avisos: [] }; }
+    const real = mapaIds()[args.p_operacion];
+    if (!real) throw new Error('No se encontró ese registro.');
+    args = { ...args, p_operacion: real };
+  }
+  // Si ya hay cosas esperando, lo nuevo va detrás para que se suba en orden
+  if (SIN_RED_OK.has(fn) && (Cola.leer().length || !navigator.onLine)) return encolarSinRed(fn, args);
+  try { return await rpcRed(fn, args); } catch (e) {
+    if (esDeRed(e) && SIN_RED_OK.has(fn)) return encolarSinRed(fn, args);
+    if (esDeRed(e)) throw new Error('Sin conexión: esto necesita internet. Sin señal se puede envasar, encajar, manejar tambores, hacer retiros manuales y el conteo.');
+    throw e;
+  }
+}
+// Guarda el registro en la cola y devuelve una respuesta provisoria para que la pantalla siga igual
+function encolarSinRed(fn, args) {
+  const it = { fn, args, op: nuevoIdLocal(), fecha: new Date().toISOString() };
+  const r = { operacion: it.op, avisos: [], stock: {} };
+  if (fn === 'tambor_alta') { it.tamborLocal = nuevoIdLocal(); r.tambor = tamborNuevoLocal(it); }
+  if (fn === 'op_conteo') r.cambios = (args.p_items || []).length;
+  const c = Cola.leer(); c.push(it); Cola.escribir(c);
+  if (fn === 'op_envasar') { const t = tamboresConCola(E.todosTambores || []).find((x) => x.id === args.p_tambor); if (t) r.tambor = t; }
+  if (navigator.onLine) setTimeout(sincronizar, 800);
+  return r;
+}
+const tamborNuevoLocal = (it) => ({ id: it.tamborLocal, variedad: it.args.p_variedad, identificacion: it.args.p_identificacion || null,
+  kg_iniciales: Number(it.args.p_kg), kg_restantes: Number(it.args.p_kg), kg_envasados: 0, merma_kg: null,
+  estado: it.args.p_abrir ? 'abierto' : 'sin_abrir', abierto_en: it.args.p_abrir ? it.fecha : null, cerrado_en: null, ingresado_en: it.fecha, local: true });
+// Tambores como los dejaría la cola: lo último leído con señal + lo que falta subir
+function tamboresConCola(lista) {
+  const ts = lista.map((t) => ({ ...t }));
+  const de = (id) => ts.find((t) => t.id === id);
+  Cola.leer().forEach((it) => {
+    const a = it.args; const t = de(a.p_tambor ?? a.p_id);
+    if (it.fn === 'tambor_alta') ts.push(tamborNuevoLocal(it));
+    else if (it.fn === 'tambor_abrir' && t) Object.assign(t, { estado: 'abierto', abierto_en: it.fecha, local: true });
+    else if (it.fn === 'tambor_cerrar' && t) Object.assign(t, { estado: 'cerrado', cerrado_en: it.fecha, merma_kg: t.kg_restantes, local: true });
+    else if (it.fn === 'tambor_reabrir' && t) Object.assign(t, { estado: 'abierto', cerrado_en: null, merma_kg: null, local: true });
+    else if (it.fn === 'tambor_corregir' && t) Object.assign(t, { kg_iniciales: Number(a.p_kg), kg_restantes: Number(a.p_kg) - Number(t.kg_envasados), identificacion: a.p_identificacion || t.identificacion, local: true });
+    else if (it.fn === 'tambor_anular' && t) ts.splice(ts.indexOf(t), 1);
+    else if (it.fn === 'op_envasar' && t) {
+      const p = E.productos.get(a.p_producto); const kg = p ? (Number(a.p_sueltas) + Number(a.p_cajas) * (p.uds_por_caja || 0)) * p.gramos / 1000 : 0;
+      t.kg_envasados = Number(t.kg_envasados) + kg; t.kg_restantes = Number(t.kg_restantes) - kg;
+    }
+  });
+  return ts;
+}
+
+// Sube la cola en orden. Si sigue sin señal, para y reintenta después. Si la base rechaza un registro, queda en "no se pudo subir".
+let sincronizando = false;
+async function sincronizar() {
+  if (sincronizando || !E.usuaria || !Cola.leer().length) return;
+  sincronizando = true; pintarEstadoRed();
+  let subidos = 0;
+  try {
+    await sb.auth.getSession(); // renueva la sesión si venció mientras no había señal
+    const mapa = mapaIds();
+    for (let it = Cola.leer()[0]; it; it = Cola.leer()[0]) {
+      const args = { ...it.args };
+      ['p_tambor', 'p_id', 'p_operacion'].forEach((k) => { if (args[k] < 0 && mapa[args[k]]) args[k] = mapa[args[k]]; });
+      E.subiendo = it.op;
+      try {
+        const r = await rpcRed(it.fn, args);
+        if (it.fn === 'tambor_alta' && r && r.tambor) {
+          mapa[it.tamborLocal] = r.tambor.id;
+          Object.keys(VARIEDADES).forEach((v) => { if (Number(leer('tambor_' + v)) === it.tamborLocal) guardar('tambor_' + v, r.tambor.id); });
+        }
+        if (r && r.operacion) mapa[it.op] = r.operacion;
+        guardar('mapa_ids', JSON.stringify(mapa)); subidos++;
+      } catch (e) {
+        if (esDeRed(e) || /jwt/i.test(e.message)) break; // sin señal todavía
+        Cola.escribirErrores([...Cola.errores(), { ...it, error: e.message }]);
+        aviso(`No se pudo subir un ${TEXTO_FN[it.fn] || 'registro'}: ${e.message}`, 'error');
+      } finally { E.subiendo = null; }
+      Cola.escribir(Cola.leer().filter((x) => x.op !== it.op));
+    }
+  } finally {
+    sincronizando = false; pintarEstadoRed();
+  }
+  if (subidos) {
+    aviso(`Se subieron ${plural(subidos, 'registro guardado', 'registros guardados')} sin conexión.`, 'ok');
+    try { await cargarTambores(); if (typeof pintarUsos === 'function') pintarUsos(); } catch { /* se verá al volver a la pantalla */ }
+  }
+}
+window.addEventListener('online', () => { pintarEstadoRed(); sincronizar(); });
+window.addEventListener('offline', pintarEstadoRed);
+setInterval(sincronizar, 30000);
+
+// Franja bajo el título: sin conexión, registros por subir o que no se pudieron subir
+function pintarEstadoRed() {
+  if (!E.usuaria) return;
+  let d = $('#red');
+  if (!d) { d = document.createElement('div'); d.id = 'red'; $('#cab').after(d); }
+  const n = Cola.leer().length; const err = Cola.errores().length; const off = !navigator.onLine || E.sinRed;
+  const partes = [];
+  if (off) partes.push('📴 Sin conexión: lo que registres se guarda en este aparato');
+  if (n) partes.push(sincronizando ? `⏳ Subiendo ${plural(n, 'registro', 'registros')}…` : `${plural(n, 'registro', 'registros')} por subir`);
+  if (err) partes.push(`<button type="button" class="enlace" id="verErrRed">⚠ ${plural(err, 'registro no se pudo subir', 'registros no se pudieron subir')}</button>`);
+  d.className = partes.length ? (err ? 'red mal' : off ? 'red off' : 'red') : 'oculto';
+  d.innerHTML = partes.join(' · ');
+  const b = $('#verErrRed'); if (b) b.onclick = verErroresRed;
+}
+async function verErroresRed() {
+  const errs = Cola.errores();
+  const r = await dialogo({ titulo: 'Registros que no se pudieron subir', aceptar: 'Descartarlos', cancelar: 'Cerrar',
+    html: `<p class="chico">La base los rechazó (por ejemplo, un tambor que ya estaba terminado). Revisa y vuelve a registrarlos si corresponde.</p>
+      <ul>${errs.map((x) => `<li><b>${esc(TEXTO_FN[x.fn] || x.fn)}</b> (${fecha(x.fecha)}): ${esc(x.error)}</li>`).join('')}</ul>` });
+  if (r.ok) Cola.escribirErrores([]);
+}
+
+// Lecturas: con señal se guardan; sin señal se usa lo último guardado
 async function consulta(q) {
-  const { data, error } = await q;
-  if (error) throw new Error(error.message);
-  return data;
+  const clave = q && q.url ? `cache:${String(q.url)}${q.headers && q.headers.Accept ? '|' + q.headers.Accept : ''}` : null;
+  let res; try { res = await q; } catch (e) { res = { error: e }; }
+  const { data, error } = res;
+  if (!error) {
+    if (clave) guardarCache(clave, data);
+    if (E.sinRed) { E.sinRed = false; pintarEstadoRed(); sincronizar(); }
+    return data;
+  }
+  if (esDeRed(error)) {
+    E.sinRed = true; pintarEstadoRed();
+    const c = clave ? leerJSON(clave, undefined) : undefined;
+    if (c !== undefined) return c;
+    throw new Error('Sin conexión, y esta pantalla nunca se abrió con señal en este aparato.');
+  }
+  throw new Error(error.message);
+}
+function guardarCache(clave, data) {
+  const txt = JSON.stringify(data);
+  if (txt.length > 400000) return; // lo muy grande no se guarda
+  try { localStorage.setItem(clave, txt); } catch {
+    try { Object.keys(localStorage).filter((k) => k.startsWith('cache:')).forEach((k) => localStorage.removeItem(k)); localStorage.setItem(clave, txt); } catch { /* sin espacio */ }
+  }
 }
 
 function resumenCant(cj, u) {
@@ -162,7 +316,7 @@ function textoStock(p, sueltas, cajas) {
   if (!p.uds_por_caja) return plural(sueltas, 'balde', 'baldes');
   return plural(sueltas, 'unidad', 'unidades');
 }
-const nombreTambor = (t) => (t.identificacion ? t.identificacion : `N.º ${t.id}`);
+const nombreTambor = (t) => (t.identificacion ? t.identificacion : t.id < 0 ? 'Nuevo (por subir)' : `N.º ${t.id}`);
 // Palabra para las unidades sueltas de cada producto
 const unidadDe = (p) => (p.caja_controlada ? ['suelta', 'sueltas'] : p.id === 'pack' ? ['pack', 'packs'] : !p.uds_por_caja ? ['balde', 'baldes'] : ['unidad', 'unidades']);
 
@@ -349,11 +503,11 @@ async function cargarBase() {
   await cargarTambores();
 }
 async function cargarTambores() {
-  const [a, c] = await Promise.all([
-    consulta(sb.from('v_tambores').select('*').eq('estado', 'abierto').order('abierto_en', { ascending: false })),
-    consulta(sb.from('v_tambores').select('id,variedad').eq('estado', 'sin_abrir')),
-  ]);
-  E.tambores = a; E.cerrados = c; // cerrados = sin usar, disponibles en bodega
+  // Todos los tambores de una vez (se guardan para usar sin señal) + lo que falta subir
+  E.todosTambores = await consulta(sb.from('v_tambores').select('*').neq('estado', 'anulado').order('id', { ascending: true }).limit(1000));
+  const ts = tamboresConCola(E.todosTambores);
+  E.tambores = ts.filter((t) => t.estado === 'abierto').sort((x, y) => String(y.abierto_en).localeCompare(String(x.abierto_en)));
+  E.cerrados = ts.filter((t) => t.estado === 'sin_abrir'); // cerrados = sin usar, disponibles en bodega
 }
 function tamborDe(variedad) {
   const abiertos = E.tambores.filter((t) => t.variedad === variedad);
@@ -417,11 +571,22 @@ function pintarCabecera() {
 // ───────── Sesión ─────────
 
 async function iniciar() {
-  const { data: { session } } = await sb.auth.getSession();
+  let session = null; let errSes = null;
+  try { const r = await sb.auth.getSession(); session = r.data.session; errSes = r.error; } catch (e) { errSes = e; }
+  if (!session) { // sin señal la sesión no se puede renovar: se usa la que quedó guardada en el aparato
+    const g = leerJSON('mailemu-bodega', null);
+    if (g && g.user && g.user.email && (!navigator.onLine || (errSes && esDeRed(errSes)))) session = { user: g.user };
+  }
   if (!session) return pantallaLogin();
   E.usuaria = session.user.email.toLowerCase();
   try {
-    if (!(await rpc('es_usuaria'))) {
+    let autorizada;
+    try { autorizada = await rpcRed('es_usuaria', {}); guardar('autorizada_' + E.usuaria, autorizada ? '1' : '0'); } catch (e) {
+      if (!esDeRed(e)) throw e;
+      autorizada = leer('autorizada_' + E.usuaria) === '1'; E.sinRed = true;
+      if (!autorizada) throw new Error('Sin conexión: la primera vez hay que abrir la app con señal.');
+    }
+    if (!autorizada) {
       pintarCabecera();
       app.innerHTML = `<div class="tarjeta"><p class="error">La cuenta ${esc(E.usuaria)} no está autorizada para la bodega.</p><p class="nota">Pídele a Berni que la agregue.</p></div>`;
       return;
@@ -430,10 +595,19 @@ async function iniciar() {
     E.nombre = E.nombres.get(E.usuaria) || E.usuaria;
     history.replaceState({ p: 'inicio', ctx: {} }, '', '#inicio');
     ir('inicio', {}, { historial: false });
+    pintarEstadoRed(); sincronizar();
   } catch (e) {
     pintarCabecera();
     app.innerHTML = `<div class="tarjeta"><p class="error">${esc(mensaje(e))}</p><button onclick="location.reload()">Reintentar</button></div>`;
   }
+}
+// Deja la app guardada en el aparato para que abra sin señal (sw.js)
+function guardarAppEnAparato() {
+  if (!('serviceWorker' in navigator) || !(location.protocol === 'https:' || location.hostname === 'localhost')) return;
+  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then((reg) => {
+    const urls = [location.href.split('#')[0], ...performance.getEntriesByType('resource').map((r) => r.name)].filter((u) => !u.includes('supabase.co'));
+    if (reg.active) reg.active.postMessage({ cachear: [...new Set(urls)] });
+  }).catch(() => { /* sin guardado: la app sigue funcionando con señal */ });
 }
 sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT') pantallaLogin(); });
 
@@ -572,7 +746,7 @@ async function guardarBorrador() {
     await op.guardar(l); // si una falla, se detiene y las que quedan siguen en la lista
     E.ctx.borrador = E.ctx.borrador.filter((x) => x !== l); pintarBorrador();
   }
-  aviso(`Guardado: ${plural(b.length, 'línea', 'líneas')}.`, 'ok');
+  aviso(Cola.leer().length ? `Guardado en este aparato (${plural(b.length, 'línea', 'líneas')}): se sube solo cuando vuelva la señal.` : `Guardado: ${plural(b.length, 'línea', 'líneas')}.`, 'ok');
 }
 
 // Panel de cantidad de Envasar: el último frasco pistoleado, con − y + (se guarda solo al pistolear el siguiente)
@@ -1119,7 +1293,7 @@ PANTALLAS.pedido = async ({ id } = {}) => {
   const foto = () => JSON.stringify([lineasPedido(), packsPedido(), ($('#npNota') || {}).value]);
   const inicial = foto(); E.sinGuardar = () => !!$('#npCrear') && foto() !== inicial; E.continuar = 'Seguir con el pedido';
   $('#npCrear').onclick = () => encolar(id ? guardarEdicionPedido : crearPedido);
-  const cl = await consulta(sb.from('v_clientes').select('*').order('ultimo', { ascending: false }).limit(200));
+  const cl = await consulta(sb.from('v_clientes').select('*').order('ultimo', { ascending: false }).limit(200)).catch(() => []);
   const dl = $('#clientes'); if (dl) dl.innerHTML = cl.map((c) => `<option value="${esc(c.cliente)}">`).join('');
 };
 
@@ -1411,7 +1585,7 @@ PANTALLAS.retiro = async () => {
   $('#retOk').onclick = () => encolar(guardarRetiroManual);
   activarPistola(async (cod) => { const { p, tipo } = buscarCodigo(cod); sumarAlCarro(p, tipo === 'caja' ? 'caja' : 'unidad'); },
     async (p) => sumarAlCarro(p, 'unidad'));
-  const cl = await consulta(sb.from('v_clientes').select('*').order('ultimo', { ascending: false }).limit(200));
+  const cl = await consulta(sb.from('v_clientes').select('*').order('ultimo', { ascending: false }).limit(200)).catch(() => []);
   const dl = $('#clientes'); if (dl) dl.innerHTML = cl.map((c) => `<option value="${esc(c.cliente)}">`).join('');
 };
 
@@ -1464,7 +1638,7 @@ PANTALLAS.stock = async () => {
   $('#refrescar').onclick = () => ir('stock', {}, { historial: false });
   const [s, t, peds, lineas] = await Promise.all([
     consulta(sb.from('v_stock').select('*').eq('activo', true)),
-    consulta(sb.from('v_tambores').select('variedad,kg_restantes,estado').in('estado', ['abierto', 'sin_abrir'])),
+    cargarTambores().then(() => [...E.tambores, ...E.cerrados]),
     consulta(sb.from('v_pedidos').select('*').eq('estado', 'por_retirar').order('creado_en')),
     consulta(sb.from('v_pedido_lineas').select('*').order('orden')),
   ]);
@@ -1539,7 +1713,7 @@ PANTALLAS.tambores = async () => {
 };
 
 async function pintarTambores() {
-  const lista = await consulta(sb.from('v_tambores').select('*').neq('estado', 'anulado').order('id', { ascending: true }).limit(1000));
+  await cargarTambores(); const lista = tamboresConCola(E.todosTambores);
   const c = $('#listaT'); if (!c) return;
   $('#resT').innerHTML = `<section class="tarjeta destacada"><h3>Tambores disponibles</h3>${htmlResumenTambores(lista)}</section>`;
   const porVar = (a, b) => (ORDEN_VARIEDAD[a.variedad] ?? 9) - (ORDEN_VARIEDAD[b.variedad] ?? 9) || a.id - b.id;
@@ -1551,7 +1725,7 @@ async function pintarTambores() {
   // Abiertos en tabla, igual que cerrados y usados; una barrita muestra lo que queda
   const filaAbierto = (t) => {
     const pct = Math.max(0, Math.min(100, (Number(t.kg_restantes) / Number(t.kg_iniciales)) * 100));
-    return `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b></td><td>${miel(t)}</td>
+    return `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b>${t.local && (t.id > 0 || t.identificacion) ? ' <span class="etiqueta pendiente">por subir</span>' : ''}</td><td>${miel(t)}</td>
       <td class="num">${num(t.kg_restantes)} kg<span class="barrita"><i style="width:${pct}%"></i></span></td><td class="num">${num(t.kg_iniciales)} kg</td><td class="num">${num(t.kg_envasados)} kg</td>
       <td class="acciones">${btn(t, 'terminar', 'Terminar', '')}${btn(t, 'corregir', 'Corregir')}${btn(t, 'anular', 'Anular', 'peligro')}</td></tr>`;
   };
@@ -1560,14 +1734,14 @@ async function pintarTambores() {
         ${abiertos.map(filaAbierto).join('')}</table></div>` : '<p class="nota">No hay tambores abiertos.</p>'}</section>
     <section class="tarjeta"><h3>🔒 Cerrados <span class="chico">(sin usar, disponibles en bodega: ${cerrados.length})</span></h3>
       ${cerrados.length ? `<div class="tabla-scroll"><table class="tabla compacta tamb-tabla"><tr><th>Tambor</th><th>Miel</th><th class="num">Peso</th><th></th></tr>
-        ${cerrados.map((t) => `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b></td><td>${miel(t)}</td><td class="num">${num(t.kg_iniciales)} kg</td>
+        ${cerrados.map((t) => `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b>${t.local && (t.id > 0 || t.identificacion) ? ' <span class="etiqueta pendiente">por subir</span>' : ''}</td><td>${miel(t)}</td><td class="num">${num(t.kg_iniciales)} kg</td>
           <td class="acciones">${btn(t, 'abrir', 'Abrir', '')}${btn(t, 'corregir', 'Corregir')}${btn(t, 'anular', 'Anular', 'peligro')}</td></tr>`).join('')}</table></div>`
       : '<p class="nota">No hay tambores cerrados.</p>'}</section>`;
   // Usados agrupados por el año en que se terminaron; el año más reciente queda abierto
   const anio = (t) => new Date(t.cerrado_en || t.abierto_en || t.ingresado_en).getFullYear();
   const anios = [...new Set(usados.map(anio))].sort((a, b) => b - a);
   const tablaUsados = (ts) => `<div class="tabla-scroll"><table class="tabla compacta tamb-tabla"><tr><th>Tambor</th><th>Miel</th><th class="num">Peso</th><th class="num">Envasado</th><th class="num">Merma</th><th></th></tr>
-    ${ts.map((t) => `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b></td><td>${miel(t)}</td><td class="num">${num(t.kg_iniciales)} kg</td>
+    ${ts.map((t) => `<tr class="${CLASE_VARIEDAD[t.variedad]}"><td><b>${esc(nombreTambor(t))}</b>${t.local && (t.id > 0 || t.identificacion) ? ' <span class="etiqueta pendiente">por subir</span>' : ''}</td><td>${miel(t)}</td><td class="num">${num(t.kg_iniciales)} kg</td>
       <td class="num">${num(t.kg_envasados)} kg</td><td class="num">${num(t.merma_kg)} kg</td>
       <td class="acciones">${btn(t, 'reabrir', 'Reabrir')}${btn(t, 'corregir', 'Corregir')}</td></tr>`).join('')}</table></div>`;
   $('#usadosT').innerHTML = `<section class="tarjeta"><h3>✔️ Usados <span class="chico">(terminados: ${usados.length})</span></h3>
@@ -2024,7 +2198,14 @@ PANTALLAS.ayuda = () => {
     <p>Al preparar un pedido y en Encajar, toca ×10, ×12 u Otra (la cantidad se escribe ahí mismo) y pistolea un solo frasco o caja: esa lectura cuenta por esa cantidad. Después vuelve sola a ×1.</p>
     <p class="chico">Los frascos de 500 g y 1 kg tienen código y se pistolean igual que los demás. Sus cajas de 10 casi nunca llevan etiqueta: se registran en <b>Encajar</b>, en el recuadro "Encajar sin pistolear".</p></section>
   <section class="tarjeta"><h3>Nombres y avisos</h3>
-    <p>Para cambiar el nombre de un producto o de un tambor, o volver a mostrar los avisos que marcaste "No volver a mostrar", entra a <b>Configuración</b>.</p></section>`);
+    <p>Para cambiar el nombre de un producto o de un tambor, o volver a mostrar los avisos que marcaste "No volver a mostrar", entra a <b>Configuración</b>.</p></section>
+  <section class="tarjeta"><h3>Sin señal</h3>
+    <p>La app funciona sin internet en el aparato donde ya se abrió alguna vez con señal. Bajo el título aparece "📴 Sin conexión".</p>
+    <ul><li>Sin señal se puede <b>envasar</b>, <b>encajar</b>, registrar, abrir y terminar <b>tambores</b>, hacer <b>retiros manuales</b> y el <b>conteo de inventario</b>. Todo queda guardado en el aparato ("X registros por subir") y se sube solo cuando vuelve la señal.</li>
+      <li>Necesitan internet: cargar pedidos, subir facturas, armar y retirar pedidos, y el historial.</li>
+      <li>El stock que se ve sin señal es el de la última vez que hubo conexión; se pone al día al subir lo pendiente.</li>
+      <li>Si algo no se pudo subir (por ejemplo, un tambor que otra persona ya había terminado), aparece un aviso con el detalle.</li></ul></section>`);
 };
 
 iniciar();
+window.addEventListener('load', () => setTimeout(guardarAppEnAparato, 1500)); // la app queda guardada aunque todavía no se entre

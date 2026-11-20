@@ -369,3 +369,8 @@ details.anio[open] > summary { margin-bottom: 4px; }
 .cant-caja .etq { font-size: 11px; color: var(--suave); text-transform: uppercase; letter-spacing: .04em; }
 .cant-caja .fila { display: flex; align-items: center; gap: 6px; }
 .cant-caja .paso { min-height: 44px; min-width: 44px; padding: 0; font-size: 22px; font-weight: 700; }
+/* Franja de conexión bajo el título */
+.red { background: var(--miel-suave); color: var(--alerta); font-size: 14px; font-weight: 700; text-align: center; padding: 7px 16px; border-bottom: 1px solid #e8d9a3; }
+.red.off { background: #fff3cd; }
+.red.mal { background: var(--mal-fondo); color: var(--mal); }
+.red .enlace { color: inherit; font-weight: 700; text-decoration: underline; background: none; border: 0; padding: 0; min-height: 0; cursor: pointer; }
